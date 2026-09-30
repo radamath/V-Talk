@@ -1,0 +1,162 @@
+<Window x:Class="VTalk.UI.AdminPanelWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="V-Talk — Admin Paneli" Width="900" Height="600" MinWidth="700" MinHeight="420"
+        Icon="pack://application:,,,/Assets/vtalk.ico"
+        Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="12">
+        <Border DockPanel.Dock="Top" Background="#FFF4D6" BorderBrush="#E8C766" BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,0,0,10">
+            <TextBlock TextWrapping="Wrap" Foreground="#6B5000">
+                <Run FontWeight="Bold" Text="Admin oturumu açık."/>
+                <Run Text="Yaptığınız değişiklikler &quot;Kaydet ve Yayınla&quot; ile organizasyon anahtarıyla imzalanıp ağdaki tüm V-Talk kullanıcılarına dağıtılır. Oturum 15 dakika işlem yapılmazsa kapanır."/>
+            </TextBlock>
+        </Border>
+
+        <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
+            <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="{StaticResource MutedTextBrush}"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Style="{StaticResource ToolButton}" Content="Kapat (oturumu kapat)" Click="Close_Click"/>
+                <Button Style="{StaticResource PrimaryButton}" Content="Kaydet ve Yayınla" Width="160" Click="Publish_Click"/>
+            </StackPanel>
+        </DockPanel>
+
+        <TabControl>
+            <TabItem Header="Kullanıcılar ve Roller">
+                <DockPanel Margin="6">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Tüm yeni kişileri dizine ekle" Click="IncludeAll_Click"/>
+                            <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" VerticalAlignment="Center"
+                                   Text="&quot;Dizinde&quot; işaretli kişiler doğrulanmış olarak görünür. Kullanıcı/bilgisayar adı kişinin kendi beyanıdır: eklemeden önce IP adresini ve kimlik parmak izini (satırın üzerine gelin) kişiyle doğrulayın. ⚠ işaretli satırlar aynı adı iddia eden birden fazla kimliği gösterir."/>
+                    </DockPanel>
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+                        <TextBlock DockPanel.Dock="Left" VerticalAlignment="Center" Margin="0,0,6,0"
+                                   Text="Bir ağdaki (CIDR) çevrimiçi kişileri topluca işaretle:"/>
+                        <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Margin="6,0,0,0"
+                                Content="Bu ağdakileri ekle" Click="IncludeSubnet_Click"/>
+                        <TextBox x:Name="SubnetBox" VerticalAlignment="Center" Padding="3" ToolTip="Örn: 10.20.30.0/24"/>
+                    </DockPanel>
+                    <DataGrid x:Name="MembersGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
+                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="28" Background="White"
+                              HorizontalGridLinesBrush="#E6ECF2" SelectionMode="Single">
+                        <DataGrid.Columns>
+                            <DataGridCheckBoxColumn Header="Dizinde" Binding="{Binding Include, UpdateSourceTrigger=PropertyChanged}" Width="60"/>
+                            <DataGridTextColumn Header="Görünen ad" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+                            <DataGridComboBoxColumn x:Name="RoleColumn" Header="Rol" Width="125"
+                                                    SelectedValueBinding="{Binding Role, UpdateSourceTrigger=PropertyChanged}"
+                                                    SelectedValuePath="Value" DisplayMemberPath="Name"/>
+                            <DataGridComboBoxColumn x:Name="UnitColumn" Header="Çalıştığı birim" Width="140"
+                                                    SelectedValueBinding="{Binding UnitKey, UpdateSourceTrigger=PropertyChanged}"
+                                                    SelectedValuePath="Id" DisplayMemberPath="Name"/>
+                            <DataGridTextColumn Header="Kullanıcı" Binding="{Binding User}" IsReadOnly="True" Width="95"/>
+                            <DataGridTextColumn Header="Bilgisayar" Binding="{Binding Machine}" IsReadOnly="True" Width="95"/>
+                            <DataGridTextColumn Header="IP adresi" Binding="{Binding Address}" IsReadOnly="True" Width="100"/>
+                            <DataGridTextColumn Header="Durum" Binding="{Binding StateText}" IsReadOnly="True" Width="80"/>
+                            <DataGridTextColumn Header="Kimlik" Binding="{Binding ShortId}" IsReadOnly="True" Width="75"/>
+                            <DataGridTextColumn Header="⚠" Binding="{Binding WarningIcon}" IsReadOnly="True" Width="28"/>
+                        </DataGrid.Columns>
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Setter Property="ToolTip" Value="{Binding Tooltip}"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding HasWarning}" Value="True">
+                                        <Setter Property="Background" Value="#FFF4E5"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                    </DataGrid>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="Birimler">
+                <DockPanel Margin="6">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+                        <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Birim ekle" Click="AddUnit_Click"/>
+                        <TextBox x:Name="NewUnitBox" Padding="3" MaxLength="64" Margin="0,2,6,2"/>
+                    </DockPanel>
+                    <ListBox x:Name="UnitsList" HorizontalContentAlignment="Stretch" Background="White">
+                        <ListBox.ItemTemplate>
+                            <DataTemplate>
+                                <StackPanel Margin="2,2,2,6">
+                                    <DockPanel>
+                                        <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Sil" Click="DeleteUnit_Click"/>
+                                        <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Kişi ekle ▾" Margin="0,0,4,0"
+                                                Click="AddToUnit_Click"/>
+                                        <TextBlock DockPanel.Dock="Right" VerticalAlignment="Center" Margin="8,0" Foreground="{StaticResource MutedTextBrush}"
+                                                   Text="{Binding MemberCountText}"/>
+                                        <TextBox Text="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Padding="3" MaxLength="64"/>
+                                    </DockPanel>
+                                    <ItemsControl ItemsSource="{Binding Members}" Margin="4,4,0,0">
+                                        <ItemsControl.ItemsPanel>
+                                            <ItemsPanelTemplate>
+                                                <WrapPanel/>
+                                            </ItemsPanelTemplate>
+                                        </ItemsControl.ItemsPanel>
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Border Background="#EEF4FB" BorderBrush="#C9DCF2" BorderThickness="1" CornerRadius="3"
+                                                        Padding="6,1,2,1" Margin="0,0,4,4" ToolTip="{Binding Tooltip}">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Name}" VerticalAlignment="Center"/>
+                                                        <TextBlock Text="{Binding RoleBadge}" VerticalAlignment="Center" Margin="5,0,0,0"
+                                                                   FontSize="11" Foreground="#9A6700"/>
+                                                        <Button Content="✕" Click="RemoveFromUnit_Click" Margin="4,0,0,0" Padding="3,0"
+                                                                Background="Transparent" BorderThickness="0" Cursor="Hand"
+                                                                ToolTip="Birimden çıkar"/>
+                                                    </StackPanel>
+                                                </Border>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+                                </StackPanel>
+                            </DataTemplate>
+                        </ListBox.ItemTemplate>
+                    </ListBox>
+                </DockPanel>
+            </TabItem>
+
+            <TabItem Header="Organizasyon ve Güvenlik">
+                <ScrollViewer VerticalScrollBarVisibility="Auto">
+                    <StackPanel Margin="10">
+                        <GroupBox Header="Organizasyon anahtarı">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap">
+                                    <Run Text="Parmak izi: "/><Run x:Name="FingerprintRun" FontFamily="Consolas" FontWeight="Bold"/>
+                                </TextBlock>
+                                <TextBlock x:Name="VersionText" Margin="0,4,0,0"/>
+                                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,8,0,6"
+                                           Text="Önerilen dağıtım: org.pub dosyasını VTalk.exe ile aynı klasöre (veya C:\ProgramData\VTalk\) koyarak dağıtın. Böylece kullanıcılar yalnızca bu organizasyonun yetkilerine güvenir ve sahte admin girişimleri etkisiz kalır."/>
+                                <Button Style="{StaticResource ToolButton}" HorizontalAlignment="Left" Content="org.pub dosyasını dışa aktar…" Click="ExportPub_Click"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="Erişim politikası">
+                            <StackPanel>
+                                <CheckBox x:Name="MembersOnlyCheck" FontWeight="SemiBold" Checked="Policy_Changed" Unchecked="Policy_Changed"
+                                          Content="Yalnızca dizindeki kişiler mesajlaşabilir (sıkı mod — önerilir)"/>
+                                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="20,4,0,0"
+                                           Text="Açıkken dizinde olmayan kimlikler (yabancı cihazlar, sahte kimlikler, dizinden çıkarılan eski çalışanlar) mesaj, dosya ve duyuru gönderip alamaz ve kullanıcıların listesinde görünmez. Yeni kurulan bilgisayarları yalnızca Adminler görür ve dizine ekleyebilir. Açmadan önce tüm çalışanları dizine eklediğinizden emin olun."/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="Yönetici anahtarı (başka bir admin bilgisayarı için)">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,6"
+                                           Text="Dışa aktarılan dosya admin parolasıyla şifrelidir. Yalnızca güvendiğiniz yöneticilere, güvenli bir yoldan verin."/>
+                                <Button Style="{StaticResource ToolButton}" HorizontalAlignment="Left" Content="Admin anahtarını dışa aktar…" Click="ExportKey_Click"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="Admin parolasını değiştir">
+                            <StackPanel Width="320" HorizontalAlignment="Left">
+                                <TextBlock Text="Yeni parola"/>
+                                <PasswordBox x:Name="NewPass1" Padding="3" Margin="0,2,0,6"/>
+                                <TextBlock Text="Yeni parola (tekrar)"/>
+                                <PasswordBox x:Name="NewPass2" Padding="3" Margin="0,2,0,6"/>
+                                <Button Style="{StaticResource ToolButton}" HorizontalAlignment="Left" Content="Parolayı değiştir" Click="ChangePassword_Click"/>
+                            </StackPanel>
+                        </GroupBox>
+                    </StackPanel>
+                </ScrollViewer>
+            </TabItem>
+        </TabControl>
+    </DockPanel>
+</Window>

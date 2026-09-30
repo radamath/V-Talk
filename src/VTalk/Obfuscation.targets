@@ -1,0 +1,89 @@
+<Project>
+  <!--
+    Yayın derlemesinde (dotnet publish -c Release -p:Obfuscate=true) derlenen VTalk.dll, bin'e kopyalanmadan ve
+    tek dosyalık pakete gömülmeden önce Obfuscar ile karartılır:
+      - tip/metot/alan/özellik adları okunamaz Unicode adlarla değiştirilir,
+      - kod içindeki tüm metin sabitleri şifrelenir (HideStrings),
+      - ildasm engeli eklenir, PDB/hata ayıklama bilgisi üretilmez, derleme yolları gizlenir.
+    Aşağıdaki istisnalar çalışma anında adla çözülen üyeler içindir; kaldırılırsa uygulama bozulur:
+      - VTalk.App ve VTalk.UI.*: XAML x:Class/converter tip adları, {Binding} özellik adları, nameof(...) ile
+        bildirilen özellik değişikliği, SelectedValuePath/DisplayMemberPath.
+      - Settings, MessageData, Database/ContactInfo: [JsonPropertyName] taşımayan, özellik adıyla JSON'a yazılan veri.
+      - COM arabirimleri ve P/Invoke bildirimleri.
+    Eşleme dosyası (Mapping.txt) obj altında kalır; dağıtıma girmez.
+  -->
+
+  <PropertyGroup Condition="'$(Obfuscate)' == 'true' and '$(Configuration)' == 'Release'">
+    <ObfuscateEnabled>true</ObfuscateEnabled>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildProjectDirectory)=.</PathMap>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+  </PropertyGroup>
+
+  <Target Name="VTalkObfuscate"
+          AfterTargets="CoreCompile"
+          Condition="'$(ObfuscateEnabled)' == 'true' and !$(MSBuildProjectName.Contains('_wpftmp'))"
+          Inputs="@(IntermediateAssembly)"
+          Outputs="$(MSBuildProjectDirectory)\$(IntermediateOutputPath)obfuscar\.done">
+
+    <PropertyGroup>
+      <_ObfRoot>$(MSBuildProjectDirectory)\$(IntermediateOutputPath)obfuscar\</_ObfRoot>
+      <_ObfIn>$(_ObfRoot)in</_ObfIn>
+      <_ObfOut>$(_ObfRoot)out</_ObfOut>
+      <_ObfConfig>$(_ObfRoot)obfuscar.xml</_ObfConfig>
+      <_ObfFile>@(IntermediateAssembly->'%(Filename)%(Extension)')</_ObfFile>
+    </PropertyGroup>
+
+    <ItemGroup>
+      <_ObfSearchDir Include="@(ReferencePath->'%(RootDir)%(Directory)'->TrimEnd('\')->Distinct())" />
+    </ItemGroup>
+
+    <RemoveDir Directories="$(_ObfIn);$(_ObfOut)" />
+    <MakeDir Directories="$(_ObfIn);$(_ObfOut)" />
+    <Copy SourceFiles="@(IntermediateAssembly)" DestinationFolder="$(_ObfIn)" />
+
+    <ItemGroup>
+      <_ObfLine Include="&lt;?xml version=&quot;1.0&quot;?&gt;" />
+      <_ObfLine Include="&lt;Obfuscator&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;InPath&quot; value=&quot;$(_ObfIn)&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;OutPath&quot; value=&quot;$(_ObfOut)&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;KeepPublicApi&quot; value=&quot;false&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;HidePrivateApi&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;RenameProperties&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;RenameEvents&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;RenameFields&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;HideStrings&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;UseUnicodeNames&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;ReuseNames&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;OptimizeMethods&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;SuppressIldasm&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;AnalyzeXaml&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;SkipEnums&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;RegenerateDebugInfo&quot; value=&quot;false&quot; /&gt;" />
+      <_ObfLine Include="@(_ObfSearchDir->'&lt;AssemblySearchPath path=&quot;%(Identity)&quot; /&gt;')" />
+      <_ObfLine Include="&lt;Module file=&quot;$(_ObfIn)\$(_ObfFile)&quot;&gt;" />
+      <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.App&quot; skipMethods=&quot;true&quot; skipFields=&quot;true&quot; skipProperties=&quot;true&quot; skipEvents=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.UI\.&quot; skipFields=&quot;true&quot; skipProperties=&quot;true&quot; skipEvents=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.Core.Settings&quot; skipProperties=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.Core.MessageData&quot; skipProperties=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Data\.Database[/+]ContactInfo$&quot; skipProperties=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Services\.NativeMethods&quot; skipMethods=&quot;true&quot; skipFields=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Net\.NetworkGuard[/+]I&quot; skipMethods=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipMethod type=&quot;VTalk.Services.ProcessHardening&quot; rx=&quot;^(SetDllDirectoryW|SetProcessMitigationPolicy)$&quot; /&gt;" />
+      <_ObfLine Include="&lt;/Module&gt;" />
+      <_ObfLine Include="&lt;/Obfuscator&gt;" />
+    </ItemGroup>
+    <WriteLinesToFile File="$(_ObfConfig)" Lines="@(_ObfLine)" Overwrite="true" Encoding="UTF-8" />
+
+    <Exec Command="dotnet tool run obfuscar.console &quot;$(_ObfConfig)&quot;"
+          WorkingDirectory="$(MSBuildProjectDirectory)"
+          StandardOutputImportance="low" />
+
+    <Error Condition="!Exists('$(_ObfOut)\$(_ObfFile)')" Text="Obfuscar çıktısı üretilmedi: $(_ObfOut)\$(_ObfFile)" />
+    <Copy SourceFiles="$(_ObfOut)\$(_ObfFile)" DestinationFiles="@(IntermediateAssembly)" />
+    <Touch Files="$(_ObfRoot).done" AlwaysCreate="true" />
+    <Message Importance="high" Text="VTalk: $(_ObfFile) karartıldı (eşleme: $(_ObfOut)\Mapping.txt)" />
+  </Target>
+</Project>

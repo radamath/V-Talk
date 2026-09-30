@@ -1,0 +1,21 @@
+<Window x:Class="VTalk.UI.BulletinWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Duyuru" Width="420" SizeToContent="Height" MaxHeight="520" ResizeMode="NoResize"
+        Icon="pack://application:,,,/Assets/vtalk.ico" Topmost="True" ShowActivated="False"
+        Background="#FFFBEA" FontFamily="Segoe UI" FontSize="13" WindowStartupLocation="Manual">
+    <DockPanel Margin="14">
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+            <TextBlock Text="📢" FontSize="28" Margin="0,0,10,0"/>
+            <StackPanel>
+                <TextBlock x:Name="TitleText" FontSize="16" FontWeight="Bold" Foreground="#8A6500"/>
+                <TextBlock x:Name="SenderText" Foreground="{StaticResource MutedTextBrush}"/>
+            </StackPanel>
+        </DockPanel>
+        <Button DockPanel.Dock="Bottom" Style="{StaticResource PrimaryButton}" Content="Tamam" Width="100" HorizontalAlignment="Right"
+                Margin="0,10,0,0" Click="Ok_Click"/>
+        <ScrollViewer VerticalScrollBarVisibility="Auto" MaxHeight="340">
+            <TextBox x:Name="BodyText" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap" FontSize="14"/>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

@@ -1,0 +1,41 @@
+<Window x:Class="VTalk.UI.AdminLoginWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Admin Girişi" Width="440" SizeToContent="Height" ResizeMode="NoResize"
+        Icon="pack://application:,,,/Assets/vtalk.ico"
+        Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner">
+    <StackPanel Margin="18">
+        <TextBlock x:Name="TitleText" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <TextBlock x:Name="InfoText" TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,12"/>
+
+        <StackPanel x:Name="ImportPanel" Visibility="Collapsed" Margin="0,0,0,10">
+            <TextBlock Text="Yönetici anahtar dosyası (.vtkey)"/>
+            <DockPanel Margin="0,3,0,0">
+                <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Gözat…" Click="Browse_Click"/>
+                <TextBox x:Name="KeyFileBox" IsReadOnly="True" Padding="3"/>
+            </DockPanel>
+        </StackPanel>
+
+        <TextBlock Text="Admin parolası"/>
+        <PasswordBox x:Name="PasswordBox" Padding="3" Margin="0,3,0,10" KeyDown="PasswordBox_KeyDown"/>
+
+        <StackPanel x:Name="ConfirmPanel" Visibility="Collapsed">
+            <TextBlock Text="Parola (tekrar)"/>
+            <PasswordBox x:Name="ConfirmBox" Padding="3" Margin="0,3,0,6"/>
+            <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,10"
+                       Text="En az 10 karakter; büyük/küçük harf, rakam ve sembolden en az üçünü içermeli. Parola unutulursa kurtarılamaz — güvenli bir yerde saklayın."/>
+        </StackPanel>
+
+        <TextBlock x:Name="ErrorText" Foreground="#C0392B" TextWrapping="Wrap" Margin="0,0,0,8" Visibility="Collapsed"/>
+
+        <DockPanel>
+            <Button x:Name="SwitchImportButton" Content="Başka bir anahtarı içe aktar" Style="{StaticResource LinkButton}"
+                    VerticalAlignment="Center" Click="SwitchImport_Click" Visibility="Collapsed"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Style="{StaticResource ToolButton}" Content="Vazgeç" Width="90" IsCancel="True"/>
+                <Button x:Name="OkButton" Style="{StaticResource PrimaryButton}" Width="150" Click="Ok_Click"/>
+            </StackPanel>
+        </DockPanel>
+    </StackPanel>
+</Window>

@@ -1,0 +1,18 @@
+bin/
+obj/
+dist/
+.vs/
+.vscode/
+*.user
+*.suo
+TestResults/
+
+# Admin anahtar dosyaları ve kuruluşa özel güven kökü asla depoya girmemeli
+*.vtkey
+org.pub
+
+# Günlük, yerel veri ve karartma eşleme çıktıları
+*.log
+*.db
+*.db-*
+Mapping.txt

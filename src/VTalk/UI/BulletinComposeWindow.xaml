@@ -1,0 +1,20 @@
+<Window x:Class="VTalk.UI.BulletinComposeWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Duyuru Gönder" Width="460" Height="380" MinHeight="300"
+        Icon="pack://application:,,,/Assets/vtalk.ico"
+        Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner">
+    <DockPanel Margin="14">
+        <TextBlock DockPanel.Dock="Top" Text="📢 Duyuru gönder" FontSize="17" FontWeight="SemiBold" Margin="0,0,0,8"/>
+        <StackPanel DockPanel.Dock="Top" Margin="0,0,0,8">
+            <RadioButton x:Name="ScopeAll" Content="Genel duyuru — tüm kullanıcılar (yalnızca Admin)" Margin="0,2"/>
+            <RadioButton x:Name="ScopeUnit" Margin="0,2"/>
+        </StackPanel>
+        <StackPanel DockPanel.Dock="Bottom" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Style="{StaticResource ToolButton}" Content="Vazgeç" Width="90" IsCancel="True"/>
+            <Button Style="{StaticResource PrimaryButton}" Content="Gönder" Width="110" Click="Send_Click"/>
+        </StackPanel>
+        <TextBox x:Name="TextBox" AcceptsReturn="True" TextWrapping="Wrap" VerticalScrollBarVisibility="Auto" Padding="4" MaxLength="16000"/>
+    </DockPanel>
+</Window>

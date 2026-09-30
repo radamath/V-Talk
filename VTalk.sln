@@ -1,0 +1,36 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{728AC2DC-9542-4BB1-A6DF-7B2C000F0B9F}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VTalk", "src\VTalk\VTalk.csproj", "{6D04AFAF-66E6-4CD9-A082-1B4749D27D51}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{8000E30E-52DB-4AB6-9B69-B9FF790240C0}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VTalk.Tests", "tests\VTalk.Tests\VTalk.Tests.csproj", "{74DFCD27-BB35-46B3-BA3A-3F4BD6E06AB8}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{6D04AFAF-66E6-4CD9-A082-1B4749D27D51}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6D04AFAF-66E6-4CD9-A082-1B4749D27D51}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6D04AFAF-66E6-4CD9-A082-1B4749D27D51}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6D04AFAF-66E6-4CD9-A082-1B4749D27D51}.Release|Any CPU.Build.0 = Release|Any CPU
+		{74DFCD27-BB35-46B3-BA3A-3F4BD6E06AB8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{74DFCD27-BB35-46B3-BA3A-3F4BD6E06AB8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{74DFCD27-BB35-46B3-BA3A-3F4BD6E06AB8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{74DFCD27-BB35-46B3-BA3A-3F4BD6E06AB8}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{6D04AFAF-66E6-4CD9-A082-1B4749D27D51} = {728AC2DC-9542-4BB1-A6DF-7B2C000F0B9F}
+		{74DFCD27-BB35-46B3-BA3A-3F4BD6E06AB8} = {8000E30E-52DB-4AB6-9B69-B9FF790240C0}
+	EndGlobalSection
+EndGlobal
