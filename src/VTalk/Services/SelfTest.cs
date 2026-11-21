@@ -35,9 +35,24 @@ internal static class SelfTest
         report.AppendLine(code == 0 ? "SONUÇ: BAŞARILI" : $"SONUÇ: BAŞARISIZ ({code})");
         if (!string.IsNullOrEmpty(reportPath))
         {
-            try { File.WriteAllText(reportPath, report.ToString(), Encoding.UTF8); } catch { }
+            try
+            {
+                File.WriteAllText(reportPath, report.ToString(), Encoding.UTF8);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"Öz test raporu yazılamadı ({reportPath}): {ex.Message}");
+            }
         }
-        try { Directory.Delete(AppPaths.DataDir, recursive: true); } catch { }
+        try
+        {
+            Directory.Delete(AppPaths.DataDir, recursive: true);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Günlük de bu klasörde olduğundan hata standart hataya yazılır.
+            Console.Error.WriteLine($"Öz test veri klasörü silinemedi ({AppPaths.DataDir}): {ex.Message}");
+        }
         return code;
     }
 
@@ -163,7 +178,64 @@ internal static class SelfTest
         r.AppendLine(File.Exists(done.Data.FilePath + ":Zone.Identifier") ? "     (MOTW eklendi)" : "     (uyarı: MOTW doğrulanamadı)");
         Ok("Dosya aktarımı + SHA-256");
 
+        // 8) UDP duyurusu gelmeyen eş, bilinen uç noktası üzerinden yoklanınca çevrimiçi olmalı (durumu dahil)
+        chatB.UpdateProfile(status: PresenceStatus.Busy);
+        Introduce();
+        chatA.Registry.MarkOffline(idB.PeerId);
+        await chatA.ProbeNowAsync();
+        if (chatA.Registry.Get(idB.PeerId) is not { IsOnline: true, Status: PresenceStatus.Busy })
+            return Fail(r, 8, "Erişilebilirlik yoklaması");
+        Ok("Erişilebilirlik yoklaması (ping/pong)");
+
+        // 9) Karartılmış meta veri: çalışma zamanı async durum makinesi tiplerini çözebilmeli (yığın izi biçimlendirme buna dayanır)
+        var broken = BrokenStateMachineReferences();
+        if (broken > 0) return Fail(r, 9, $"Çözülemeyen durum makinesi tipi: {broken}");
+        try
+        {
+            _ = await ThrowThroughAwait();
+            return Fail(r, 9, "Beklenen istisna atılmadı");
+        }
+        catch (InvalidOperationException ex)
+        {
+            // Karartılmış derlemede yığın izi biçimlendirilebilmeli (ToString atmamalı ve boş olmamalı).
+            if (ex.ToString().Length == 0) return Fail(r, 9, "Yığın izi biçimlendirilemedi");
+        }
+        Ok("Meta veri bütünlüğü + yığın izi");
+
+        // 10) Güncelleme iş/durum kayıtları karartılmış derlemede JSON'a yazılıp okunabilmeli; aksi halde istemci
+        //     "tamamlandı" bildiremez ve admin paneli "Güncelleniyor" durumunda kalır.
+        if (!AppUpdate.PersistedStateRoundTrips(out var stateError))
+            return Fail(r, 10, "Güncelleme durum kaydı: " + stateError);
+        Ok("Güncelleme durum kaydı (JSON)");
+
         return 0;
+    }
+
+    private static int BrokenStateMachineReferences()
+    {
+        int broken = 0;
+        foreach (var type in typeof(SelfTest).Assembly.GetTypes())
+        {
+            foreach (var method in type.GetMethods(System.Reflection.BindingFlags.DeclaredOnly | System.Reflection.BindingFlags.Instance |
+                         System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic))
+            {
+                try
+                {
+                    _ = method.GetCustomAttributes(typeof(System.Runtime.CompilerServices.StateMachineAttribute), false);
+                }
+                catch (Exception)
+                {
+                    broken++;
+                }
+            }
+        }
+        return broken;
+    }
+
+    private static async Task<int> ThrowThroughAwait()
+    {
+        await Task.Yield();
+        throw new InvalidOperationException("öz sınama");
     }
 
     private static int Fail(StringBuilder r, int code, string what)

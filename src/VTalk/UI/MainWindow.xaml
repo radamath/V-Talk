@@ -1,10 +1,10 @@
 <Window x:Class="VTalk.UI.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="V-Talk" Width="360" Height="680" MinWidth="300" MinHeight="420"
+        Title="V-Talk" Width="360" Height="700" MinWidth="300" MinHeight="420"
         Icon="pack://application:,,,/Assets/vtalk.ico"
         Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
-        WindowStartupLocation="Manual">
+        WindowStartupLocation="Manual" ResizeMode="CanResizeWithGrip">
     <DockPanel>
         <Menu DockPanel.Dock="Top" Background="White" Padding="2">
             <MenuItem Header="_Messenger">
@@ -13,8 +13,13 @@
                     <MenuItem Header="Meşgul (sessiz)" Tag="1" Click="StatusMenu_Click"/>
                     <MenuItem Header="Dışarıda" Tag="2" Click="StatusMenu_Click"/>
                 </MenuItem>
+                <MenuItem x:Name="RefreshPeersMenu" Header="Kullanıcıları yenile" InputGestureText="F5" Click="RefreshPeers_Click"/>
+                <Separator/>
                 <MenuItem Header="Profil resmini değiştir…" Click="ChangeAvatar_Click"/>
                 <MenuItem Header="Alınan dosyalar klasörünü aç" Click="OpenDownloads_Click"/>
+                <Separator/>
+                <MenuItem Header="Grup sohbeti oluştur…" Click="CreateGroup_Click"/>
+                <MenuItem Header="Mesajlarda ara…" InputGestureText="Ctrl+Shift+F" Click="SearchMessages_Click"/>
                 <Separator/>
                 <MenuItem Header="Ayarlar…" Click="Settings_Click"/>
                 <Separator/>
@@ -27,6 +32,7 @@
                 <MenuItem x:Name="VerifyAllMenu" Header="Bekleyenlerin tümünü doğrula…" Click="VerifyAll_Click" Visibility="Collapsed"/>
                 <Separator/>
                 <MenuItem x:Name="BulletinMenu" Header="Duyuru Gönder…" Click="Bulletin_Click"/>
+                <MenuItem x:Name="ForceUpdateMenu" Header="İstemcileri güncelle" Click="ForceUpdate_Click" Visibility="Collapsed"/>
             </MenuItem>
             <MenuItem Header="_Yardım">
                 <MenuItem Header="Hakkında" Click="About_Click"/>
@@ -180,6 +186,7 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
                         <Ellipse Width="10" Height="10" Margin="2,0,8,0" VerticalAlignment="Center"
                                  Fill="{Binding Status, Converter={StaticResource StatusBrush}}"/>
@@ -198,7 +205,25 @@
                                 VerticalAlignment="Center" Visibility="{Binding HasUnread, Converter={StaticResource BoolToVis}}">
                             <TextBlock Text="{Binding Unread}" Foreground="White" FontSize="11" FontWeight="Bold" HorizontalAlignment="Center"/>
                         </Border>
-                        <Border Grid.Column="3" Width="38" Height="38" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="3" ClipToBounds="True">
+                        <Button Grid.Column="3" Content="✕" Width="22" Height="22" Margin="2,0,4,0" Padding="0"
+                                FontSize="11" Cursor="Hand" ToolTip="Kullanıcıyı listeden sil"
+                                Click="ForgetContact_Click" Tag="{Binding}">
+                            <Button.Style>
+                                <Style TargetType="Button" BasedOn="{StaticResource ToolButton}">
+                                    <Setter Property="Visibility" Value="Collapsed"/>
+                                    <Style.Triggers>
+                                        <MultiDataTrigger>
+                                            <MultiDataTrigger.Conditions>
+                                                <Condition Binding="{Binding IsGroupChat}" Value="False"/>
+                                                <Condition Binding="{Binding AllowForgetContacts, RelativeSource={RelativeSource AncestorType=Window}}" Value="True"/>
+                                            </MultiDataTrigger.Conditions>
+                                            <Setter Property="Visibility" Value="Visible"/>
+                                        </MultiDataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Button.Style>
+                        </Button>
+                        <Border Grid.Column="4" Width="38" Height="38" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="3" ClipToBounds="True">
                             <Grid>
                                 <Image Source="{StaticResource DefaultAvatar}" Stretch="UniformToFill"/>
                                 <Image Source="{Binding Avatar}" Stretch="UniformToFill"/>

@@ -1,8 +1,10 @@
 bin/
 obj/
 dist/
+installer/out/
 .vs/
 .vscode/
+.wix/
 *.user
 *.suo
 TestResults/
@@ -10,6 +12,9 @@ TestResults/
 # Admin anahtar dosyaları ve kuruluşa özel güven kökü asla depoya girmemeli
 *.vtkey
 org.pub
+
+# Kuruluşa özel yerel derleme ayarları (admin bilgisayarı, ağlar)
+*.local.json
 
 # Günlük, yerel veri ve karartma eşleme çıktıları
 *.log

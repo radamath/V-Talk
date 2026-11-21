@@ -21,7 +21,19 @@ public sealed class DirectoryService
     public byte[]? PinnedOrgKey { get; private set; }
     public bool IsDeployedTrustRoot { get; private set; }
     public string? OrgFingerprint => PinnedOrgKey == null ? null : CryptoUtil.Fingerprint(PinnedOrgKey);
-    public OrgDirectory? Current { get; private set; }
+    private OrgDirectory? _current;
+    private IReadOnlyDictionary<string, OrgMember> _membersById = new Dictionary<string, OrgMember>();
+
+    /// <summary>Uygulanan dizin. Üye listesi yerinde değiştirilmez (yeni dizin kopyayla imzalanır); indeks atamada kurulur.</summary>
+    public OrgDirectory? Current
+    {
+        get => _current;
+        private set
+        {
+            _membersById = BuildMemberIndex(value);
+            _current = value;
+        }
+    }
     public SignedDirectory? CurrentSigned { get; private set; }
     public int Version => Current?.Version ?? 0;
     public bool MembersOnly => Current?.MembersOnly == true;
@@ -29,6 +41,10 @@ public sealed class DirectoryService
     public bool ConflictDetected { get; private set; }
 
     public event Action? Changed;
+
+    /// <summary>Parola unutulunca yeni anahtar kurulana kadar ağdaki dizin bu bilgisayara sabitlenmesin.</summary>
+    private bool _acceptNewOrganization;
+    private static string NewOrgMarker => Path.Combine(AppPaths.DataDir, "new-org.pending");
 
     public void Load()
     {
@@ -49,7 +65,15 @@ public sealed class DirectoryService
                 break;
             }
         }
-        if (PinnedOrgKey == null) PinnedOrgKey = TryReadPublicKeyFile(AppPaths.PinnedOrgKeyFile);
+        if (PinnedOrgKey == null && File.Exists(NewOrgMarker))
+        {
+            _acceptNewOrganization = true;
+            Log.Info("Yeni organizasyon kurulması bekleniyor; ağdaki dizin kabul edilmeyecek.");
+        }
+        else if (PinnedOrgKey == null)
+        {
+            PinnedOrgKey = TryReadPublicKeyFile(AppPaths.PinnedOrgKeyFile);
+        }
 
         try
         {
@@ -161,6 +185,11 @@ public sealed class DirectoryService
     {
         lock (_gate)
         {
+            if (_acceptNewOrganization && PinnedOrgKey == null)
+            {
+                error = "Yeni organizasyon kuruluyor.";
+                return false;
+            }
             if (!Verify(signed, out var dir, out error) || dir == null) return false;
             if (dir.Version <= Version)
             {
@@ -211,8 +240,50 @@ public sealed class DirectoryService
             if (PinnedOrgKey != null && !CryptographicOperations.FixedTimeEquals(PinnedOrgKey, orgPub))
                 throw new InvalidOperationException("Bu bilgisayar zaten başka bir organizasyon anahtarına güveniyor.");
             PinnedOrgKey = orgPub;
+            _acceptNewOrganization = false;
+            TryDelete(NewOrgMarker);
             if (!IsDeployedTrustRoot)
                 LocalProtector.WriteAtomic(AppPaths.PinnedOrgKeyFile, Encoding.ASCII.GetBytes(Convert.ToBase64String(orgPub)));
+        }
+    }
+
+    /// <summary>
+    /// Bu bilgisayardaki organizasyon güvenini bırakır. Kurulumla dağıtılan anahtar (exe yanı / ProgramData) kalkmadan yeni anahtar kurulamaz.
+    /// </summary>
+    public bool BeginNewOrganization(out string? error)
+    {
+        if (IsDeployedTrustRoot)
+        {
+            error = "Kurulumdaki organizasyon anahtarı duruyor. Yeni organizasyon, o anahtarın olmadığı kopyadan kurulmalı.";
+            return false;
+        }
+        lock (_gate)
+        {
+            PinnedOrgKey = null;
+            Current = null;
+            CurrentSigned = null;
+            ConflictDetected = false;
+            _acceptNewOrganization = true;
+            TryDelete(AppPaths.PinnedOrgKeyFile);
+            TryDelete(AppPaths.DirectoryFile);
+            AppPaths.EnsureCreated();
+            File.WriteAllBytes(NewOrgMarker, []);
+        }
+        Log.Info("Yerel organizasyon güveni bırakıldı; yeni anahtar kurulana kadar dizin kabul edilmeyecek.");
+        Changed?.Invoke();
+        error = null;
+        return true;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Dosya silinemedi ({Path.GetFileName(path)}): {ex.GetType().Name}");
         }
     }
 
@@ -224,7 +295,16 @@ public sealed class DirectoryService
         Changed?.Invoke();
     }
 
-    public OrgMember? GetMember(string peerId) => Current?.Members.FirstOrDefault(m => m.PeerId == peerId);
+    /// <summary>Sunum, yetki ve filtrelemede sık çağrılır; binlerce üyelik dizinde doğrusal tarama yapılmaz.</summary>
+    public OrgMember? GetMember(string? peerId) => peerId == null ? null : _membersById.GetValueOrDefault(peerId);
+
+    private static Dictionary<string, OrgMember> BuildMemberIndex(OrgDirectory? dir)
+    {
+        var index = new Dictionary<string, OrgMember>(StringComparer.Ordinal);
+        // Yinelenen kimlikte önceki davranış (FirstOrDefault) korunur: ilk kayıt geçerlidir.
+        foreach (var member in dir?.Members ?? []) index.TryAdd(member.PeerId, member);
+        return index;
+    }
 
     public Role GetRole(string peerId) => GetMember(peerId)?.Role ?? Role.User;
 

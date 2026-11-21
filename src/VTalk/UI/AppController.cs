@@ -60,9 +60,16 @@ public sealed class AppController : IDisposable
         Chat.MessageAdded += m => _ui.BeginInvoke(() => OnMessageAdded(m));
         Chat.MessageUpdated += m => _ui.BeginInvoke(() => OnMessageUpdated(m));
         Chat.NudgeReceived += id => _ui.BeginInvoke(() => OnNudge(id));
+        Chat.TypingReceived += (conversationId, from) => _ui.BeginInvoke(() =>
+        {
+            if (_chatWindows.TryGetValue(conversationId, out var w)) w.ShowTyping(from);
+        });
         Chat.BulletinReceived += m => _ui.BeginInvoke(() => OnBulletin(m));
         Chat.AvatarUpdated += id => _ui.BeginInvoke(() => RefreshContact(id));
         Chat.DirectoryChanged += () => _ui.BeginInvoke(OnDirectoryChanged);
+        Chat.UpdateReady += message => _ui.BeginInvoke(() => Tray.Notify("V-Talk", message, ShowMain));
+        Chat.GroupsChanged += () => _ui.BeginInvoke(SyncChatGroups);
+        Chat.GroupInviteReceived += (group, from) => _ui.BeginInvoke(() => OnGroupInvite(group, from));
         Chat.Network.Changed += () => _ui.BeginInvoke(() => NetworkChanged?.Invoke());
         Chat.Files.Progress += (peer, msg, done, total) => _ui.BeginInvoke(() =>
         {
@@ -71,9 +78,12 @@ public sealed class AppController : IDisposable
 
         Chat.Start();
         foreach (var s in Chat.Registry.All) OnPeerChanged(s, false);
+        SyncChatGroups();
+        if (Chat.DiscoveryWarning != null)
+            MessageBox.Show(Chat.DiscoveryWarning, "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
 
         _main = new MainWindow(this);
-        if (!startMinimized) _main.Show();
+        if (!startMinimized) ShowMain();
         _idleTimer.Start();
         UpdateTrayTooltip();
 
@@ -92,7 +102,20 @@ public sealed class AppController : IDisposable
     public string DisplayName(string peerId)
     {
         if (peerId == Chat.Identity.PeerId) return Chat.Settings.DisplayName;
-        var name = GetContact(peerId)?.Name ?? Chat.Registry.Get(peerId)?.Name ?? peerId[..8];
+        if (ChatGroup.IsConversationId(peerId))
+            return GetContact(peerId)?.Name
+                   ?? Chat.GetChatGroup(ChatGroup.TryParseGroupId(peerId)!)?.Name
+                   ?? "Grup sohbeti";
+        var snap = Chat.Registry.Get(peerId);
+        var name = GetContact(peerId)?.Name;
+        if (string.IsNullOrEmpty(name)) name = snap is { Name.Length: > 0 } ? snap.Name : null;
+        if (string.IsNullOrEmpty(name))
+        {
+            name = CanViewIdentity ? peerId[..8]
+                : snap is { User.Length: > 0 } ? snap.User
+                : snap is { Machine.Length: > 0 } ? snap.Machine
+                : "Adsız kişi";
+        }
         return Chat.Directory.Current != null && Chat.Directory.GetMember(peerId) == null
             ? $"{name} (doğrulanmamış)"
             : name;
@@ -113,11 +136,18 @@ public sealed class AppController : IDisposable
         }
         UpdateTrayTooltip();
         _main?.UpdateCounts();
+        SyncChatGroups();
     }
 
     /// <summary>Kişiyi listede günceller; sıkı modda görmememiz gereken kimlikleri listeden kaldırır.</summary>
     private ContactViewModel? SyncContact(PeerSnapshot s)
     {
+        // ForgetPeer sonrası boş PublicKey ile gelen bildirim: listeden düş.
+        if (s.PublicKey.Length == 0)
+        {
+            RemoveContactFromUi(s.PeerId);
+            return null;
+        }
         if (!Chat.IsVisible(s.PeerId))
         {
             if (_contacts.Remove(s.PeerId, out var hidden)) Contacts.Remove(hidden);
@@ -130,9 +160,118 @@ public sealed class AppController : IDisposable
             _contacts[s.PeerId] = vm;
             Contacts.Add(vm);
         }
-        vm.Update(s, Chat.Directory);
+        vm.Update(s, Chat.Directory, CanViewIdentity);
         if (_chatWindows.TryGetValue(s.PeerId, out var w)) w.RefreshHeader();
         return vm;
+    }
+
+    private void RemoveContactFromUi(string peerId)
+    {
+        if (_chatWindows.TryGetValue(peerId, out var w)) w.Close();
+        if (_contacts.Remove(peerId, out var gone)) Contacts.Remove(gone);
+        _main?.UpdateCounts();
+        _main?.RefreshGrouping();
+    }
+
+    /// <summary>Hayalet / eski kimliği yerel listeden siler. Çevrimiçiyse onay gerekir (UI).</summary>
+    public bool ForgetContact(string peerId)
+    {
+        if (!Chat.ForgetPeer(peerId)) return false;
+        RemoveContactFromUi(peerId);
+        return true;
+    }
+
+    /// <summary>Kimlik / parmak izi / IP yalnızca dizin admini veya org anahtarı olanlara.</summary>
+    public bool CanViewIdentity =>
+        CanManageDirectory || Chat.Directory.GetMember(Chat.Identity.PeerId)?.Role == Role.Admin;
+
+    public void SyncChatGroups()
+    {
+        var groups = Chat.ListChatGroups();
+        var keep = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var group in groups)
+        {
+            var conv = group.ConversationId;
+            keep.Add(conv);
+            if (!_contacts.TryGetValue(conv, out var vm))
+            {
+                vm = new ContactViewModel(conv);
+                _contacts[conv] = vm;
+                Contacts.Add(vm);
+            }
+            var anyOnline = group.MemberIds
+                .Where(id => id != Chat.Identity.PeerId)
+                .Any(id => Chat.Registry.Get(id) is { IsOnline: true });
+            vm.ApplyChatGroup(group, anyOnline ? PresenceStatus.Online : PresenceStatus.Offline);
+            if (_chatWindows.TryGetValue(conv, out var w)) w.RefreshHeader();
+        }
+        foreach (var id in _contacts.Keys.Where(ChatGroup.IsConversationId).Except(keep).ToList())
+        {
+            if (_contacts.Remove(id, out var gone)) Contacts.Remove(gone);
+            if (_chatWindows.TryGetValue(id, out var w)) w.Close();
+        }
+        _main?.RefreshGrouping();
+        _main?.UpdateCounts();
+    }
+
+    private void OnGroupInvite(ChatGroup group, string fromPeerId)
+    {
+        SyncChatGroups();
+        var conv = group.ConversationId;
+        var who = DisplayName(fromPeerId);
+        var kind = group.Temporary ? "geçici sohbete" : "grup sohbetine";
+        var body = $"{who} sizi {kind} davet ediyor.\n\nSohbet: {group.Name}\n\nKatılmak istiyor musunuz?";
+        ShowMain();
+        var answer = MessageBox.Show(_main, body, "V-Talk — Sohbet daveti",
+            MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.Yes);
+        if (answer != MessageBoxResult.Yes)
+        {
+            LeaveChatGroup(group.Id);
+            return;
+        }
+
+        var w = OpenChat(conv, activate: true);
+        NativeMethods.Flash(w);
+        if (Chat.EffectiveStatus != PresenceStatus.Busy)
+            Sounds.Play(SoundKind.Message);
+    }
+
+    public ChatGroup? CreateChatGroup(string name, IEnumerable<string> members, bool temporary = false)
+    {
+        var group = Chat.CreateChatGroup(name, members, temporary);
+        if (group != null) SyncChatGroups();
+        return group;
+    }
+
+    public ChatGroup? AddMembersToChatGroup(string groupId, IEnumerable<string> members)
+    {
+        var group = Chat.AddMembersToChatGroup(groupId, members);
+        if (group != null) SyncChatGroups();
+        return group;
+    }
+
+    /// <returns>Geçici oda dağıldıysa 1:1 için yeniden açılacak peerId.</returns>
+    public string? RemoveMemberFromChatGroup(string groupId, string memberPeerId)
+    {
+        var (group, reopen) = Chat.RemoveMemberFromChatGroup(groupId, memberPeerId);
+        var conv = ChatGroup.ToConversationId(groupId);
+        if (reopen != null)
+        {
+            if (_chatWindows.TryGetValue(conv, out var w)) w.Close();
+            SyncChatGroups();
+            OpenChat(reopen);
+            return reopen;
+        }
+        if (group != null) SyncChatGroups();
+        return null;
+    }
+
+    public void LeaveChatGroup(string groupId)
+    {
+        var conv = ChatGroup.ToConversationId(groupId);
+        if (_chatWindows.TryGetValue(conv, out var w)) w.Close();
+        Chat.LeaveChatGroup(groupId);
+        SyncChatGroups();
     }
 
     private void RefreshContact(string peerId)
@@ -185,7 +324,8 @@ public sealed class AppController : IDisposable
     private void OnMessageAdded(StoredMessage m)
     {
         if (!Chat.IsVisible(m.PeerId)) return;
-        if (!_contacts.ContainsKey(m.PeerId) && Chat.Registry.Get(m.PeerId) is { } snap) OnPeerChanged(snap, false);
+        if (ChatGroup.IsConversationId(m.PeerId)) SyncChatGroups();
+        else if (!_contacts.ContainsKey(m.PeerId) && Chat.Registry.Get(m.PeerId) is { } snap) OnPeerChanged(snap, false);
 
         if (m.Direction == MessageDirection.Outgoing)
         {
@@ -195,25 +335,41 @@ public sealed class AppController : IDisposable
         if (m.Kind == MessageKind.Announcement) return; // OnBulletin ayrıca ele alır; pencereye aşağıda eklenir.
 
         var busy = Chat.EffectiveStatus == PresenceStatus.Busy;
-        var window = _chatWindows.TryGetValue(m.PeerId, out var existing) ? existing : OpenChat(m.PeerId, activate: false);
+        var isGroup = ChatGroup.IsConversationId(m.PeerId);
+        // Grupta pencere/bildirim: titreşim herkese; metin yalnızca @kişi veya @all.
+        var alert = !isGroup || m.Kind == MessageKind.Nudge || Mentions.Includes(m.Data.Mentions, Chat.Identity.PeerId);
+
+        if (!_chatWindows.TryGetValue(m.PeerId, out var window))
+        {
+            if (!alert)
+            {
+                if (_contacts.TryGetValue(m.PeerId, out var quiet)) quiet.Unread++;
+                return;
+            }
+            window = OpenChat(m.PeerId, activate: true);
+        }
+
         window.AddMessage(m);
         if (m.Kind == MessageKind.Nudge) return;
 
-        if (!window.IsActive)
+        if (!window.IsActive && _contacts.TryGetValue(m.PeerId, out var vm)) vm.Unread++;
+        if (!alert) return;
+
+        // @bahsetme / @all: pencere açılsa bile ses + Windows bildirimi (ayarlar kapalı olsa da).
+        var mentionAlert = isGroup && Mentions.Includes(m.Data.Mentions, Chat.Identity.PeerId);
+        if (!window.IsActive) NativeMethods.Flash(window);
+        if (busy && !mentionAlert) return;
+
+        Sounds.Play(SoundKind.Message, force: mentionAlert);
+        if (mentionAlert || Chat.Settings.ShowNotifications)
         {
-            if (_contacts.TryGetValue(m.PeerId, out var vm)) vm.Unread++;
-            NativeMethods.Flash(window);
-            if (!busy)
-            {
-                Sounds.Play(SoundKind.Message);
-                if (Chat.Settings.ShowNotifications)
-                {
-                    var preview = !Chat.Settings.ShowMessagePreview ? (m.Kind == MessageKind.File ? "📎 Yeni dosya" : "Yeni mesaj")
-                        : m.Kind == MessageKind.File ? $"📎 Dosya: {m.Data.FileName}" : m.Data.Text ?? "";
-                    var verified = Chat.Directory.Current == null || Chat.Directory.GetMember(m.PeerId) != null;
-                    Tray.Notify($"{DisplayName(m.PeerId)} diyor ki:", preview, () => OpenChat(m.PeerId), warning: !verified);
-                }
-            }
+            var preview = !Chat.Settings.ShowMessagePreview ? (m.Kind == MessageKind.File ? "📎 Yeni dosya" : "Yeni mesaj")
+                : m.Kind == MessageKind.File ? $"📎 Dosya: {m.Data.FileName}" : m.Data.Text ?? "";
+            var verified = isGroup || Chat.Directory.Current == null || Chat.Directory.GetMember(m.PeerId) != null;
+            var title = isGroup
+                ? $"{DisplayName(m.PeerId)} — {DisplayName(m.Data.SenderPeerId ?? "")}"
+                : DisplayName(m.PeerId);
+            Tray.Notify(title, preview, () => OpenChat(m.PeerId), warning: !verified);
         }
     }
 
@@ -394,6 +550,7 @@ public sealed class AppController : IDisposable
                 Units = cur.Units.Select(u => new OrgUnit { Id = u.Id, Name = u.Name }).ToList(),
                 Members = members,
                 MembersOnly = cur.MembersOnly,
+                Networks = [.. cur.Networks],
             }, key);
             Log.Info($"{logText} (dizin sürümü {Chat.Directory.Version})");
             return true;
@@ -417,9 +574,26 @@ public sealed class AppController : IDisposable
     public void ShowMain()
     {
         _main ??= new MainWindow(this);
-        _main.Show();
+        try
+        {
+            _main.Show();
+        }
+        catch (Exception ex)
+        {
+            // İlk Show yarıda kalırsa pencere yerel tutamacı olmadan kalır ve bir daha gösterilemez.
+            Log.Error("Ana pencere gösterilemedi; yeniden oluşturuluyor", ex);
+            _main.Discard();
+            _main = new MainWindow(this);
+            _main.Show();
+        }
         if (_main.WindowState == WindowState.Minimized) _main.WindowState = WindowState.Normal;
+        _main.ShowInTaskbar = true;
         _main.Activate();
+        // Öne getir (kurulum sonrası / tepsi tıklaması).
+        _main.Topmost = true;
+        _main.Topmost = false;
+        NativeMethods.Flash(_main, stop: true);
+        _main.Focus();
     }
 
     public bool IsExiting => _exiting;
@@ -430,7 +604,15 @@ public sealed class AppController : IDisposable
         _exiting = true;
         foreach (var w in Application.Current.Windows.OfType<Window>().ToList())
         {
-            try { w.Close(); } catch { }
+            try
+            {
+                w.Close();
+            }
+            catch (InvalidOperationException ex)
+            {
+                // Kapanmakta olan pencere yeniden kapatılamaz; uygulama yine de aşağıda kapanır.
+                Log.Info($"Pencere kapatılamadı ({w.GetType().Name}): {ex.Message}");
+            }
         }
         Application.Current.Shutdown();
     }

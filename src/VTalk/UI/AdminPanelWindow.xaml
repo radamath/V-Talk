@@ -1,10 +1,10 @@
 <Window x:Class="VTalk.UI.AdminPanelWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="V-Talk — Admin Paneli" Width="900" Height="600" MinWidth="700" MinHeight="420"
+        Title="V-Talk — Admin Paneli" Width="1280" Height="720" MinWidth="960" MinHeight="480"
         Icon="pack://application:,,,/Assets/vtalk.ico"
         Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
-        WindowStartupLocation="CenterOwner">
+        WindowStartupLocation="CenterScreen" WindowState="Maximized">
     <DockPanel Margin="12">
         <Border DockPanel.Dock="Top" Background="#FFF4D6" BorderBrush="#E8C766" BorderThickness="1" CornerRadius="4" Padding="10,6" Margin="0,0,0,10">
             <TextBlock TextWrapping="Wrap" Foreground="#6B5000">
@@ -16,6 +16,8 @@
         <DockPanel DockPanel.Dock="Bottom" Margin="0,10,0,0">
             <TextBlock x:Name="StatusText" VerticalAlignment="Center" Foreground="{StaticResource MutedTextBrush}"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Style="{StaticResource ToolButton}" Content="Yenile" Click="Refresh_Click" Margin="0,0,8,0"
+                        ToolTip="Kişi listesini ve güncelleme durumlarını yeniden yükle"/>
                 <Button Style="{StaticResource ToolButton}" Content="Kapat (oturumu kapat)" Click="Close_Click"/>
                 <Button Style="{StaticResource PrimaryButton}" Content="Kaydet ve Yayınla" Width="160" Click="Publish_Click"/>
             </StackPanel>
@@ -37,22 +39,45 @@
                         <TextBox x:Name="SubnetBox" VerticalAlignment="Center" Padding="3" ToolTip="Örn: 10.20.30.0/24"/>
                     </DockPanel>
                     <DataGrid x:Name="MembersGrid" AutoGenerateColumns="False" CanUserAddRows="False" CanUserDeleteRows="False"
-                              HeadersVisibility="Column" GridLinesVisibility="Horizontal" RowHeight="28" Background="White"
-                              HorizontalGridLinesBrush="#E6ECF2" SelectionMode="Single">
+                              CanUserResizeColumns="True" HeadersVisibility="Column" GridLinesVisibility="Horizontal"
+                              RowHeight="28" Background="White" HorizontalGridLinesBrush="#E6ECF2" SelectionMode="Single"
+                              ColumnWidth="SizeToHeader">
                         <DataGrid.Columns>
-                            <DataGridCheckBoxColumn Header="Dizinde" Binding="{Binding Include, UpdateSourceTrigger=PropertyChanged}" Width="60"/>
-                            <DataGridTextColumn Header="Görünen ad" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
-                            <DataGridComboBoxColumn x:Name="RoleColumn" Header="Rol" Width="125"
+                            <DataGridCheckBoxColumn Header="Dizinde" Binding="{Binding Include, UpdateSourceTrigger=PropertyChanged}" Width="58"/>
+                            <DataGridTextColumn Header="Görünen ad" Binding="{Binding Name, UpdateSourceTrigger=PropertyChanged}" Width="140"/>
+                            <DataGridComboBoxColumn x:Name="RoleColumn" Header="Rol" Width="110"
                                                     SelectedValueBinding="{Binding Role, UpdateSourceTrigger=PropertyChanged}"
                                                     SelectedValuePath="Value" DisplayMemberPath="Name"/>
-                            <DataGridComboBoxColumn x:Name="UnitColumn" Header="Çalıştığı birim" Width="140"
+                            <DataGridComboBoxColumn x:Name="UnitColumn" Header="Çalıştığı birim" Width="130"
                                                     SelectedValueBinding="{Binding UnitKey, UpdateSourceTrigger=PropertyChanged}"
                                                     SelectedValuePath="Id" DisplayMemberPath="Name"/>
-                            <DataGridTextColumn Header="Kullanıcı" Binding="{Binding User}" IsReadOnly="True" Width="95"/>
-                            <DataGridTextColumn Header="Bilgisayar" Binding="{Binding Machine}" IsReadOnly="True" Width="95"/>
-                            <DataGridTextColumn Header="IP adresi" Binding="{Binding Address}" IsReadOnly="True" Width="100"/>
-                            <DataGridTextColumn Header="Durum" Binding="{Binding StateText}" IsReadOnly="True" Width="80"/>
-                            <DataGridTextColumn Header="Kimlik" Binding="{Binding ShortId}" IsReadOnly="True" Width="75"/>
+                            <DataGridTextColumn Header="Kullanıcı" Binding="{Binding User}" IsReadOnly="True" Width="100"/>
+                            <DataGridTextColumn Header="Bilgisayar" Binding="{Binding Machine}" IsReadOnly="True" Width="120"/>
+                            <DataGridTextColumn Header="IP adresi" Binding="{Binding Address}" IsReadOnly="True" Width="105"/>
+                            <DataGridTextColumn Header="Durum" Binding="{Binding StateText}" IsReadOnly="True" Width="90"/>
+                            <DataGridTextColumn Header="Sürüm" Binding="{Binding ClientVersion}" IsReadOnly="True" Width="58"/>
+                            <DataGridTextColumn Header="Son güncelleme" Binding="{Binding LastUpdatedText}" IsReadOnly="True" Width="120"/>
+                            <DataGridTextColumn Header="Güncelleme" Binding="{Binding UpdateStatusText}" IsReadOnly="True" Width="150"/>
+                            <DataGridTemplateColumn Header="" Width="78">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="Güncelle" Padding="6,1" Margin="2,0"
+                                                IsEnabled="{Binding CanPushUpdate}"
+                                                Click="PushOne_Click" Tag="{Binding}"/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
+                            <DataGridTextColumn Header="Kimlik" Binding="{Binding ShortId}" IsReadOnly="True" Width="72"/>
+                            <DataGridTemplateColumn Header="Sil" Width="56">
+                                <DataGridTemplateColumn.CellTemplate>
+                                    <DataTemplate>
+                                        <Button Content="Sil" Padding="6,1" Margin="2,0"
+                                                IsEnabled="{Binding CanRemoveFromDirectory}"
+                                                Click="DeleteMember_Click" Tag="{Binding}"
+                                                ToolTip="Dizinden ve yerel listeden kaldır. Yeni kimlikle tekrar katılabilir."/>
+                                    </DataTemplate>
+                                </DataGridTemplateColumn.CellTemplate>
+                            </DataGridTemplateColumn>
                             <DataGridTextColumn Header="⚠" Binding="{Binding WarningIcon}" IsReadOnly="True" Width="28"/>
                         </DataGrid.Columns>
                         <DataGrid.RowStyle>
@@ -128,6 +153,14 @@
                                 <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,8,0,6"
                                            Text="Önerilen dağıtım: org.pub dosyasını VTalk.exe ile aynı klasöre (veya C:\ProgramData\VTalk\) koyarak dağıtın. Böylece kullanıcılar yalnızca bu organizasyonun yetkilerine güvenir ve sahte admin girişimleri etkisiz kalır."/>
                                 <Button Style="{StaticResource ToolButton}" HorizontalAlignment="Left" Content="org.pub dosyasını dışa aktar…" Click="ExportPub_Click"/>
+                            </StackPanel>
+                        </GroupBox>
+                        <GroupBox Header="Uzak ağlar (VPN / şubeler)">
+                            <StackPanel>
+                                <TextBlock TextWrapping="Wrap" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,4"
+                                           Text="IPsec/OpenVPN ile bağlı il ve şubelerin IP adresleri veya alt ağları (CIDR), virgülle ayırın. Kaydet ve Yayınla ile tüm kullanıcılara imzalı olarak dağıtılır; her bilgisayar bu ağlardaki kişileri arar ve bu ağları güvenilir sayar. Alt ağ başına en fazla 1024 adres taranır."/>
+                                <TextBox x:Name="NetworksBox" Padding="3" TextWrapping="Wrap" AcceptsReturn="False" MinHeight="44"
+                                         ToolTip="Örn: 10.20.30.0/24, 10.20.40.0/23, 192.168.50.0/24"/>
                             </StackPanel>
                         </GroupBox>
                         <GroupBox Header="Erişim politikası">

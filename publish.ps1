@@ -1,4 +1,4 @@
-# V-Talk'u tek dosyalık Windows uygulaması (VTalk.exe) olarak "dist" klasörüne derler.
+﻿# V-Talk'u tek dosyalık Windows uygulaması (VTalk.exe) olarak "dist" klasörüne derler.
 #   .\publish.ps1                      -> .NET kurulu olmayan bilgisayarlarda da çalışan tek exe (~70 MB)
 #   .\publish.ps1 -FrameworkDependent  -> küçük exe (~5 MB), hedefte .NET 8 Desktop Runtime gerekir
 #   .\publish.ps1 -NoObfuscate         -> karartmasız (yalnızca sorun ayıklama için; dağıtmayın)

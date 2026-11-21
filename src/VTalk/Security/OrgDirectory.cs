@@ -31,9 +31,15 @@ public sealed class OrgDirectory
     /// yalnızca Admin rolündekiler onları görür (kayıt için).
     /// </summary>
     [JsonPropertyName("mo")] public bool MembersOnly { get; set; }
+    /// <summary>
+    /// VPN/şube ağları (IPv4 veya CIDR). Admin yayınlar, tüm istemciler keşif hedefi ve güvenilen ağ olarak kullanır.
+    /// İmzalı olduğu için yalnızca admin değiştirebilir; eski sürümler bilinmeyen alanı yok sayar.
+    /// </summary>
+    [JsonPropertyName("nets")] public List<string> Networks { get; set; } = [];
 
     public const int MaxUnits = 500;
     public const int MaxMembers = 4000;
+    public const int MaxNetworks = 64;
 
     /// <summary>İmzalı içerik doğrulandıktan sonra bile alanları katı biçimde denetler.</summary>
     public string? Validate()
@@ -47,6 +53,15 @@ public sealed class OrgDirectory
             u.Name = TextLimits.Clean(u.Name, TextLimits.UnitNameMax);
             if (u.Name.Length == 0) return "Boş birim adı.";
         }
+        if (Networks.Count > MaxNetworks) return "Çok fazla uzak ağ.";
+        var networks = new List<string>();
+        foreach (var raw in Networks)
+        {
+            var entry = (raw ?? "").Trim();
+            if (!VTalk.Net.NetworkTargets.TryParse(entry, out _, out _)) return "Geçersiz uzak ağ: " + entry;
+            if (!networks.Contains(entry)) networks.Add(entry);
+        }
+        Networks = networks;
         var peers = new HashSet<string>();
         foreach (var m in Members)
         {

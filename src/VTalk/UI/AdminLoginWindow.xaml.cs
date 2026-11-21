@@ -34,6 +34,7 @@ public partial class AdminLoginWindow : Window
         ImportPanel.Visibility = mode == Mode.Import ? Visibility.Visible : Visibility.Collapsed;
         ConfirmPanel.Visibility = mode == Mode.Create ? Visibility.Visible : Visibility.Collapsed;
         SwitchImportButton.Visibility = mode == Mode.Login ? Visibility.Visible : Visibility.Collapsed;
+        NewOrgButton.Visibility = mode == Mode.Import ? Visibility.Visible : Visibility.Collapsed;
         var fp = _app.Chat.Directory.OrgFingerprint;
         switch (mode)
         {
@@ -62,6 +63,26 @@ public partial class AdminLoginWindow : Window
     }
 
     private void SwitchImport_Click(object sender, RoutedEventArgs e) => SetMode(Mode.Import);
+
+    private void NewOrg_Click(object sender, RoutedEventArgs e)
+    {
+        if (_app.Chat.Directory.IsDeployedTrustRoot)
+        {
+            ShowError("Bu kopya kurulumdaki eski organizasyon anahtarını kullanıyor. Yeni organizasyon, o anahtarın olmadığı güncel pencereden kurulur.");
+            return;
+        }
+        var answer = MessageBox.Show(this,
+            "Eski organizasyon bu bilgisayarda bırakılacak. Birimler, roller ve doğrulanmış kişiler silinir.\n\n" +
+            "Diğer bilgisayarlar, yeni kurulum paketini almadan bu organizasyona katılamaz. Yeni admin parolası unutulursa kurtarılamaz.",
+            "V-Talk", MessageBoxButton.OKCancel, MessageBoxImage.Warning);
+        if (answer != MessageBoxResult.OK) return;
+        if (!_app.Chat.Directory.BeginNewOrganization(out var error))
+        {
+            ShowError(error ?? "Organizasyon bırakılamadı.");
+            return;
+        }
+        SetMode(Mode.Create);
+    }
 
     private void Browse_Click(object sender, RoutedEventArgs e)
     {

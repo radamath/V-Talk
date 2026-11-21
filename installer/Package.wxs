@@ -1,0 +1,127 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  V-Talk MSI. Kişisel ağ ve admin adı bu dosyada durmaz; derlemede installer/out/work altındaki
+  parçadan gelir. Güvenlik duvarı kuralları Windows Installer tarafından yazılır.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="V-Talk"
+           Manufacturer="V-Talk"
+           Version="$(var.AppVersion)"
+           UpgradeCode="F88389BB-4BB2-4D69-9C99-4F074EF700E5"
+           Scope="perMachine"
+           Language="1055"
+           Codepage="65001">
+
+    <MajorUpgrade DowngradeErrorMessage="Daha yeni bir V-Talk sürümü zaten kurulu." AllowSameVersionUpgrades="yes" />
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <Icon Id="VTalkIcon" SourceFile="$(var.IconPath)" />
+    <Property Id="ARPPRODUCTICON" Value="VTalkIcon" />
+    <Property Id="ARPCOMMENTS" Value="Yerel ağ mesajlaşma" />
+
+    <WixVariable Id="WixUILicenseRtf" Value="$(var.LicenseRtf)" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="V-Talk'ı başlat" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WixShellExecTarget" Value="[#VTalkExe]" />
+    <CustomAction Id="LaunchApplication"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixShellExec"
+                  Impersonate="yes" />
+    <UI>
+      <ui:WixUI Id="WixUI_InstallDir" InstallDirectory="INSTALLFOLDER" />
+      <Publish Dialog="ExitDialog" Control="Finish" Event="DoAction" Value="LaunchApplication"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT REMOVE" />
+    </UI>
+
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="V-Talk" />
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="V-Talk" />
+    </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
+
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component>
+        <File Id="VTalkExe" Source="$(var.SourceDir)\VTalk.exe" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="OrgPub" Source="$(var.OrgPub)" Name="org.pub" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="DeployJson" Source="$(var.DeployJson)" Name="deploy.json" KeyPath="yes" />
+      </Component>
+      <Component>
+        <File Id="RegisterUpdateCmd" Source="$(var.RegisterUpdateCmd)" Name="register-update.cmd" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="Shortcuts" Directory="ApplicationProgramsFolder">
+      <Component>
+        <Shortcut Id="StartMenuShortcut"
+                  Name="V-Talk"
+                  Description="V-Talk"
+                  Target="[#VTalkExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="VTalkIcon" />
+        <RemoveFolder Id="RemoveStartMenuFolder" Directory="ApplicationProgramsFolder" On="uninstall" />
+        <RegistryValue Root="HKLM" Key="Software\V-Talk" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <ComponentGroup Id="DesktopShortcut" Directory="DesktopFolder">
+      <Component>
+        <Shortcut Id="DesktopLink"
+                  Name="V-Talk"
+                  Description="V-Talk"
+                  Target="[#VTalkExe]"
+                  WorkingDirectory="INSTALLFOLDER"
+                  Icon="VTalkIcon" />
+        <RegistryValue Root="HKLM" Key="Software\V-Talk" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <SetProperty Id="RegisterVTalkUpdate"
+                 Value="&quot;[System64Folder]cmd.exe&quot; /c &quot;&quot;[#RegisterUpdateCmd]&quot; &quot;[OriginalDatabase]&quot; [ProductVersion] &quot;[#VTalkExe]&quot;&quot;"
+                 Before="RegisterVTalkUpdate"
+                 Sequence="execute"
+                 Condition="NOT REMOVE" />
+    <CustomAction Id="RegisterVTalkUpdate"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <SetProperty Id="RemoveVTalkUpdate"
+                 Value="&quot;[System64Folder]schtasks.exe&quot; /Delete /TN VTalkUpdate /F"
+                 Before="RemoveVTalkUpdate"
+                 Sequence="execute"
+                 Condition="REMOVE=&quot;ALL&quot;" />
+    <CustomAction Id="RemoveVTalkUpdate"
+                  BinaryRef="Wix4UtilCA_X64"
+                  DllEntry="WixQuietExec"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <!-- Sessiz yükseltmede PowerShell'siz kullanıcı oturumunda aç (ExecutionPolicy bağımsız). -->
+    <CustomAction Id="LaunchVTalkInSession"
+                  FileRef="VTalkExe"
+                  ExeCommand="--launch-in-session"
+                  Execute="deferred"
+                  Impersonate="no"
+                  Return="ignore" />
+    <InstallExecuteSequence>
+      <Custom Action="RegisterVTalkUpdate" After="InstallFiles" Condition="NOT REMOVE" />
+      <Custom Action="LaunchVTalkInSession" After="RegisterVTalkUpdate" Condition="NOT REMOVE AND WIX_UPGRADE_DETECTED" />
+      <Custom Action="RemoveVTalkUpdate" Before="RemoveFiles" Condition="REMOVE=&quot;ALL&quot;" />
+    </InstallExecuteSequence>
+
+    <Feature Id="Main" Title="V-Talk" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="Shortcuts" />
+      <ComponentGroupRef Id="DesktopShortcut" />
+      <ComponentGroupRef Id="FirewallRules" />
+    </Feature>
+  </Package>
+</Wix>

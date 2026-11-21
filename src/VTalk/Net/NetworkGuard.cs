@@ -85,11 +85,30 @@ public sealed class NetworkGuard : IDisposable
         {
             if ((ip & mask) == net) return true;
         }
+        // Aynı yerel alt ağdaki komşular her zaman konuşabilsin. Windows ağı yanlışlıkla
+        // "Ortak/Tanımlanıyor" yapsa bile LAN mesajlaşması ve güncelleme kesilmez.
+        if (IsOnLocalSubnet(ip)) return true;
         foreach (var (net, mask) in _snapshot.BlockedSubnets)
         {
             if ((ip & mask) == net) return false;
         }
         return true;
+    }
+
+    private static bool IsOnLocalSubnet(uint ip)
+    {
+        foreach (var nic in NetworkInterface.GetAllNetworkInterfaces())
+        {
+            if (nic.OperationalStatus != OperationalStatus.Up || nic.NetworkInterfaceType == NetworkInterfaceType.Loopback)
+                continue;
+            foreach (var ua in nic.GetIPProperties().UnicastAddresses)
+            {
+                if (ua.Address.AddressFamily != AddressFamily.InterNetwork || ua.IPv4Mask == null) continue;
+                var mask = ToUInt(ua.IPv4Mask);
+                if ((ip & mask) == (ToUInt(ua.Address) & mask)) return true;
+            }
+        }
+        return false;
     }
 
     private void OnNetworkChanged(object? sender, EventArgs e) => ThreadPool.QueueUserWorkItem(_ => Refresh());

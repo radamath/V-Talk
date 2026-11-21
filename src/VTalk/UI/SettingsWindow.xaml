@@ -23,12 +23,12 @@
                 <GroupBox Header="Bildirimler ve ses">
                     <StackPanel>
                         <CheckBox x:Name="SoundCheck" Content="Yeni mesajda ses çal" Margin="0,2"/>
-                        <DockPanel Margin="20,2,0,2">
+                        <DockPanel Margin="20,2,0,4">
                             <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Dinle" Click="TestSound_Click"/>
-                            <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Seç…" Click="PickSound_Click"/>
-                            <TextBox x:Name="SoundPathBox" Padding="3" IsReadOnly="True" ToolTip="Boş bırakılırsa yerleşik MSN tarzı ses kullanılır"/>
+                            <Button DockPanel.Dock="Right" Style="{StaticResource ToolButton}" Content="Değiştir…" Click="ChooseSound_Click"/>
+                            <TextBlock VerticalAlignment="Center" Foreground="{StaticResource MutedTextBrush}" Text="Mesaj sesi: "/>
+                            <TextBlock x:Name="SoundNameText" VerticalAlignment="Center" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
                         </DockPanel>
-                        <Button Style="{StaticResource LinkButton}" Content="Yerleşik sese dön" Margin="20,0,0,4" HorizontalAlignment="Left" Click="ResetSound_Click"/>
                         <CheckBox x:Name="NotifyCheck" Content="Windows bildirimi göster (sağ alt köşe)" Margin="0,2"/>
                         <CheckBox x:Name="PreviewCheck" Content="Bildirimde mesaj içeriğini göster" Margin="20,2,0,2"
                                   ToolTip="Kapalıysa bildirimde yalnızca &quot;Yeni mesaj&quot; yazar (ekran paylaşımı, kilit ekranı için)."/>
@@ -62,8 +62,8 @@
                 </GroupBox>
                 <GroupBox Header="Ağ (gelişmiş)">
                     <StackPanel>
-                        <TextBlock TextWrapping="Wrap" Text="Farklı alt ağlara (VLAN) veya VPN üzerinden uzak şube/santrallere ulaşmak için ek IP ya da alt ağ (CIDR) girin (virgülle ayırın). Bu alt ağlar ayrıca güvenliye alınır."/>
-                        <TextBox x:Name="ExtraBox" Padding="3" Margin="0,2,0,6" ToolTip="Örn: 10.20.30.0/24, 192.168.2.255, 10.0.5.20"/>
+                        <TextBlock TextWrapping="Wrap" Text="VPN ve şube ağları admin tarafından yönetilir (Admin paneli → Organizasyon ve Güvenlik) ve tüm bilgisayarlara otomatik dağıtılır."/>
+                        <TextBlock x:Name="NetworksInfo" TextWrapping="Wrap" FontSize="11.5" Foreground="{StaticResource MutedTextBrush}" Margin="0,2,0,6"/>
                         <CheckBox x:Name="PublicNetCheck" Margin="0,2,0,2"
                                   Content="Windows'ta &quot;Ortak (Public)&quot; olarak tanımlı ağlarda da çalış (önerilmez)"/>
                         <TextBlock TextWrapping="Wrap" FontSize="11.5" Foreground="{StaticResource MutedTextBrush}" Margin="20,0,0,6"

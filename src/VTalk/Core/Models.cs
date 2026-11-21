@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace VTalk.Core;
 
 public enum PresenceStatus
@@ -58,6 +60,36 @@ public sealed class MessageData
     public bool IsImage { get; set; }
     public FileState FileState { get; set; }
     public string? Scope { get; set; }
+    /// <summary>Grup sohbetinde mesajı yazan kişinin kimliği (konuşma kimliği g:… iken).</summary>
+    public string? SenderPeerId { get; set; }
+    /// <summary>Grupta @etiketlenen üye kimlikleri; bildirim yalnızca bunlara gider.</summary>
+    [JsonPropertyName("mentions")]
+    public List<string>? Mentions { get; set; }
+    /// <summary>Yanıtlanan mesaj (kimlik, yazanı, kısa alıntı). Alıntı gönderenin beyanıdır; yalnızca gösterilir.</summary>
+    [JsonPropertyName("replyTo")] public string? ReplyToMsgId { get; set; }
+    [JsonPropertyName("replySender")] public string? ReplyToSender { get; set; }
+    [JsonPropertyName("replyText")] public string? ReplyToText { get; set; }
+}
+
+/// <summary>Yanıtlanan mesaja başvuru.</summary>
+public sealed record ReplyRef(string MsgId, string SenderPeerId, string Text)
+{
+    public const int MaxQuoteLength = 140;
+
+    /// <summary>Ağdan gelen yanıt alanlarını doğrular; geçersizse yanıt yok sayılır (mesaj yine kabul edilir).</summary>
+    public static ReplyRef? TryCreate(string? msgId, string? sender, string? text)
+    {
+        if (!Net.Packet.IsValidId(msgId) || !VTalk.Security.OrgDirectory.IsValidPeerId(sender)) return null;
+        var quote = TextLimits.Clean(text, MaxQuoteLength);
+        return new ReplyRef(msgId!, sender!.ToLowerInvariant(), quote);
+    }
+
+    public void ApplyTo(MessageData data)
+    {
+        data.ReplyToMsgId = MsgId;
+        data.ReplyToSender = SenderPeerId;
+        data.ReplyToText = Text;
+    }
 }
 
 public sealed class StoredMessage

@@ -163,6 +163,21 @@ public class DirectoryTests
         dir.Members[0].UnitId = "yok";
         Assert.False(svc.TryApply(Sign(dir, org), out _));
     }
+
+    [Fact]
+    public void NewOrganization_IgnoresNetworkUntilLocalKeyIsPinned()
+    {
+        using var org = ECDsa.Create(ECCurve.NamedCurves.nistP256);
+        var svc = new DirectoryService();
+        Assert.True(svc.BeginNewOrganization(out var error));
+        Assert.Null(error);
+        Assert.False(svc.TryApply(Sign(Sample(3), org), out var rejected));
+        Assert.Equal("Yeni organizasyon kuruluyor.", rejected);
+
+        svc.PinOrgKey(org.ExportSubjectPublicKeyInfo());
+        Assert.True(svc.TryApply(Sign(Sample(3), org), out _));
+        Assert.False(File.Exists(Path.Combine(AppPaths.DataDir, "new-org.pending")));
+    }
 }
 
 public class AdminKeyStoreTests
@@ -249,5 +264,76 @@ public class SanitizeTests
         using var id = Identity.CreateEphemeral();
         Assert.Equal(CryptoUtil.PeerIdFromPublicKey(id.PublicKey), id.PeerId);
         Assert.Equal(32, id.PeerId.Length);
+    }
+}
+
+public class MentionsTests
+{
+    [Fact]
+    public void SplitSegments_HighlightsFullSpacedName()
+    {
+        var segs = Mentions.SplitSegments("sa @Eren Tetik merhaba", ["Eren Tetik", "Murat Şahan"]);
+        Assert.Contains(segs, s => s.Mention && s.Text == "@Eren Tetik");
+        Assert.DoesNotContain(segs, s => s.Mention && s.Text == "@Eren");
+    }
+
+    [Fact]
+    public void SplitSegments_AllAlias()
+    {
+        var segs = Mentions.SplitSegments("hey @all!", ["Eren Tetik"]);
+        Assert.Contains(segs, s => s.Mention && s.Text == "@all");
+    }
+
+    [Fact]
+    public void ResolvePeerIds_SpacedName()
+    {
+        var ids = Mentions.ResolvePeerIds(
+            "@Murat Şahan bak",
+            ["p1", "p2"],
+            id => id == "p1" ? "Murat Şahan" : "Eren Tetik");
+        Assert.Equal(["p1"], ids);
+    }
+
+    [Fact]
+    public void ActiveQuery_AllowsSpacesInQuery()
+    {
+        var q = Mentions.ActiveQuery("@Murat Ş", 8);
+        Assert.NotNull(q);
+        Assert.Equal(0, q!.Value.Start);
+        Assert.Equal("Murat Ş", q.Value.Query);
+    }
+
+    [Fact]
+    public void FindMentionAt_InteriorOnly()
+    {
+        const string plain = "x @Eren Tetik y";
+        var names = new[] { "Eren Tetik" };
+        // "@Eren Tetik" starts at index 2, length 12 → [2,14)
+        Assert.Equal("@Eren Tetik", MentionRichText_Find(plain, 2, names));
+        Assert.Equal("@Eren Tetik", MentionRichText_Find(plain, 8, names));
+        Assert.Null(MentionRichText_Find(plain, 14, names)); // sınır dışı
+        Assert.Null(MentionRichText_Find(plain, 0, names));
+    }
+
+    [Fact]
+    public void SplitSegments_PreservesNewlinesAroundMentions()
+    {
+        var segs = Mentions.SplitSegments("@all\nikinci satır", ["Eren Tetik"]);
+        Assert.Contains(segs, s => s.Mention && s.Text == "@all");
+        Assert.Contains(segs, s => !s.Mention && s.Text.Contains("ikinci satır"));
+        Assert.Contains(segs, s => !s.Mention && s.Text.Contains('\n'));
+    }
+
+    // UI katmanına bağlanmadan aynı algoritmayı doğrula
+    private static string? MentionRichText_Find(string plain, int offset, IEnumerable<string> names)
+    {
+        var at = 0;
+        foreach (var (mention, segment) in Mentions.SplitSegments(plain, names))
+        {
+            var end = at + segment.Length;
+            if (mention && offset >= at && offset < end) return segment;
+            at = end;
+        }
+        return null;
     }
 }

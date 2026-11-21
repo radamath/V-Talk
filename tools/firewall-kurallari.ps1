@@ -21,17 +21,26 @@ Get-NetFirewallRule -Group 'V-Talk' -ErrorAction SilentlyContinue | Remove-NetFi
 if ($Remove) { Write-Host "V-Talk güvenlik duvarı kuralları kaldırıldı."; return }
 
 $ExePath = (Resolve-Path $ExePath).Path
+
+# -File ile çağrıldığında liste tek metin olarak gelebilir; virgül/noktalı virgül/boşlukla ayrılır ve doğrulanır.
+$subnets = @($RemoteSubnets | ForEach-Object { $_ -split '[,;\s]+' } | Where-Object { $_ })
+foreach ($s in $subnets) {
+    if ($s -notmatch '^(\d{1,3}\.){3}\d{1,3}(/(\d|[12]\d|3[0-2]))?$') { throw "Geçersiz alt ağ: $s" }
+    $ip = ($s -split '/')[0]
+    if (($ip -split '\.') | Where-Object { [int]$_ -gt 255 }) { throw "Geçersiz alt ağ: $s" }
+}
+
 # Normalde yalnızca yerel alt ağ; VPN/uzak şube alt ağları -RemoteSubnets ile eklenir. -AllowAllSubnets her yeri açar.
 $remote = if ($AllowAllSubnets) {
     'Any'
-} elseif ($RemoteSubnets.Count -gt 0) {
-    @('LocalSubnet') + ($RemoteSubnets | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+} elseif ($subnets.Count -gt 0) {
+    @('LocalSubnet') + $subnets
 } else {
     'LocalSubnet'
 }
 $common = @{ Group = 'V-Talk'; Direction = 'Inbound'; Action = 'Allow'; Profile = 'Domain,Private'; Program = $ExePath; RemoteAddress = $remote }
 
-New-NetFirewallRule @common -DisplayName 'V-Talk - Keşif (UDP 50505)' -Protocol UDP -LocalPort 50505 | Out-Null
+New-NetFirewallRule @common -DisplayName 'V-Talk - Keşif (UDP 49050)' -Protocol UDP -LocalPort 49050 | Out-Null
 New-NetFirewallRule @common -DisplayName 'V-Talk - Mesajlaşma (TCP)' -Protocol TCP | Out-Null
 
 Write-Host "Kurallar eklendi: $ExePath (uzak adres: $($remote -join ', '))" -ForegroundColor Green

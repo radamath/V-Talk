@@ -1,6 +1,6 @@
-# V-Talk kurulumu.
+﻿# V-Talk kurulumu.
 #  - Yönetici olarak çalıştırılırsa: C:\Program Files\V-Talk'a kurar, tüm kullanıcılar için Başlat menüsü
-#    kısayolu oluşturur, güvenlik duvarı kurallarını ekler ve (varsa) org.pub'ı güven kökü olarak dağıtır.
+#    kısayolu oluşturur, güvenlik duvarı kurallarını ekler ve org.pub'ı güven kökü olarak dağıtır.
 #  - Normal kullanıcı olarak: %LOCALAPPDATA%\Programs\V-Talk'a kurar (güvenlik duvarı izni ilk açılışta sorulur).
 param([switch]$NoStart)
 
@@ -8,6 +8,9 @@ $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
 $exe = Join-Path $src 'VTalk.exe'
 if (-not (Test-Path $exe)) { throw "VTalk.exe bu betikle aynı klasörde olmalı." }
+$orgPub = Join-Path $src 'org.pub'
+# Güven kökü olmadan kurulan istemci ağda ilk gördüğü dizine güvenir (TOFU); saldırgan admin'den önce davranabilir.
+if (-not (Test-Path $orgPub)) { throw "org.pub bu betikle aynı klasörde olmalı (Admin paneli → organizasyon anahtarını dışa aktar)." }
 
 $principal = New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
 $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -24,11 +27,8 @@ Get-Process VTalk -ErrorAction SilentlyContinue | Where-Object { $_.Path -like "
 New-Item -ItemType Directory -Force -Path $target | Out-Null
 Copy-Item $exe $target -Force
 
-$orgPub = Join-Path $src 'org.pub'
-if (Test-Path $orgPub) {
-    Copy-Item $orgPub $target -Force
-    Write-Host "Organizasyon güven kökü (org.pub) kuruldu." -ForegroundColor Cyan
-}
+Copy-Item $orgPub $target -Force
+Write-Host "Organizasyon güven kökü (org.pub) kuruldu." -ForegroundColor Cyan
 
 if ($isAdmin) {
     # V-Talk, güven kökü dosyasını yalnızca sahibi ve yazma yetkilileri Administrators/SYSTEM ise kabul eder.

@@ -20,6 +20,8 @@ public sealed record PeerSnapshot
     public int DirectoryVersion { get; init; }
     public string? OrgFingerprint { get; init; }
     public string? AvatarHash { get; init; }
+    /// <summary>Eşin bildirdiği uygulama sürümü (duyuru veya pong).</summary>
+    public string? AppVersion { get; init; }
     public bool IsOnline => Status != PresenceStatus.Offline && Address != null;
     public IPEndPoint? Endpoint => Address == null || Port == 0 ? null : new IPEndPoint(Address, Port);
 }
@@ -48,6 +50,18 @@ public sealed class PeerRegistry
         return previous;
     }
 
+    /// <summary>Kaydı atomik olarak günceller; (önceki, yeni) döner. Kayıt yoksa ya da değişiklik null dönerse (null, null).</summary>
+    public (PeerSnapshot? Previous, PeerSnapshot? Updated) Update(string peerId, Func<PeerSnapshot, PeerSnapshot?> change)
+    {
+        while (_peers.TryGetValue(peerId, out var old))
+        {
+            var updated = change(old);
+            if (updated == null) return (null, null);
+            if (_peers.TryUpdate(peerId, updated, old)) return (old, updated);
+        }
+        return (null, null);
+    }
+
     public PeerSnapshot? MarkOffline(string peerId)
     {
         while (_peers.TryGetValue(peerId, out var old))
@@ -58,6 +72,8 @@ public sealed class PeerRegistry
         }
         return null;
     }
+
+    public bool Remove(string peerId) => _peers.TryRemove(peerId, out _);
 
     public List<PeerSnapshot> ExpireOlderThan(TimeSpan age)
     {

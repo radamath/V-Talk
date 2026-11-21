@@ -102,7 +102,7 @@ public sealed class PeerConnection : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _closed, 1) == 1) return;
-        try { _cts.Cancel(); } catch { }
+        _cts.Cancel();
         foreach (var kv in _pending) kv.Value.TrySetCanceled();
         await _channel.DisposeAsync();
         Closed?.Invoke(this);
