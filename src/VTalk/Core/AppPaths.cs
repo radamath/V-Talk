@@ -43,6 +43,14 @@ public static class AppPaths
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "VTalk", "org.pub");
     }
 
+    /// <summary>Kurulum programının yazdığı makine geneli ayarlar (org.pub ile aynı konumlar).</summary>
+    public static IEnumerable<string> DeployConfigCandidates()
+    {
+        yield return Path.Combine(AppContext.BaseDirectory, "deploy.json");
+        yield return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "VTalk", "deploy.json");
+    }
+
     public static void EnsureCreated()
     {
         Directory.CreateDirectory(DataDir);

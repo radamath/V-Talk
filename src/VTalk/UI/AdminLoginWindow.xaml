@@ -32,6 +32,8 @@
         <DockPanel>
             <Button x:Name="SwitchImportButton" Content="Başka bir anahtarı içe aktar" Style="{StaticResource LinkButton}"
                     VerticalAlignment="Center" Click="SwitchImport_Click" Visibility="Collapsed"/>
+            <Button x:Name="NewOrgButton" Content="Yeni organizasyon kur" Style="{StaticResource LinkButton}"
+                    VerticalAlignment="Center" Click="NewOrg_Click" Visibility="Collapsed"/>
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
                 <Button Style="{StaticResource ToolButton}" Content="Vazgeç" Width="90" IsCancel="True"/>
                 <Button x:Name="OkButton" Style="{StaticResource PrimaryButton}" Width="150" Click="Ok_Click"/>

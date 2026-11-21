@@ -185,11 +185,62 @@ public class HardeningTests
     }
 
     [Fact]
+    public void NetworkTargets_InSubnets_MatchesOnlyContainedAddresses()
+    {
+        var subnets = NetworkTargets.Subnets("10.20.30.0/23");
+        Assert.True(NetworkTargets.InSubnets(IPAddress.Parse("10.20.31.200"), subnets));
+        Assert.False(NetworkTargets.InSubnets(IPAddress.Parse("10.99.0.40"), subnets));
+        Assert.True(NetworkTargets.InSubnets(IPAddress.Parse("10.20.30.5").MapToIPv6(), subnets));
+        Assert.False(NetworkTargets.InSubnets(IPAddress.IPv6Loopback, subnets));
+    }
+
+    [Fact]
+    public void PeerRegistry_Update_IsAtomicAndSkipsMissingPeers()
+    {
+        var registry = new PeerRegistry();
+        Assert.Equal((null, null), registry.Update("yok", p => p));
+        registry.Upsert(new PeerSnapshot { PeerId = "p1", PublicKey = [1], Status = PresenceStatus.Offline });
+        var (prev, updated) = registry.Update("p1", p => p with
+        {
+            Status = PresenceStatus.Busy, Address = IPAddress.Parse("10.99.0.40"), Port = 50506,
+        });
+        Assert.False(prev!.IsOnline);
+        Assert.True(updated!.IsOnline);
+        Assert.Equal(PresenceStatus.Busy, registry.Get("p1")!.Status);
+        Assert.Equal((null, null), registry.Update("p1", _ => null));
+        Assert.Equal(PresenceStatus.Busy, registry.Get("p1")!.Status);
+    }
+
+    [Fact]
     public void NetworkGuard_AllowsConfiguredVpnSubnet()
     {
         using var guard = new NetworkGuard(allowPublicNetworks: false, allowedRemoteSubnets: "10.77.0.0/16");
         Assert.True(guard.IsAllowedRemote(IPAddress.Parse("10.77.5.9")));
         Assert.True(guard.IsAllowedRemote(IPAddress.Loopback));
+    }
+
+    [Theory]
+    [InlineData("ADMIN-PC", true)]
+    [InlineData("admin-pc.firma.local", true)]
+    [InlineData("PC01", true)]
+    [InlineData("", false)]
+    [InlineData("-PC", false)]
+    [InlineData("PC-", false)]
+    [InlineData("a..b", false)]
+    [InlineData("pc name", false)]
+    [InlineData("pc\"x", false)]
+    [InlineData("\\\\server", false)]
+    public void DeploymentConfig_ValidatesHostNames(string host, bool expected) =>
+        Assert.Equal(expected, VTalk.Core.DeploymentConfig.IsValidHostName(host));
+}
+
+public class UpdateTests
+{
+    [Fact]
+    public void NewerVersion_IsDetected()
+    {
+        Assert.True(AppUpdate.IsNewer(new Version(1, 1, 2, 0), new Version(1, 1, 1, 0)));
+        Assert.False(AppUpdate.IsNewer(new Version(1, 1, 1), new Version(1, 1, 1, 0)));
     }
 }
 

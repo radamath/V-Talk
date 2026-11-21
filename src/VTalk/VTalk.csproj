@@ -14,11 +14,14 @@
     <Product>V-Talk</Product>
     <Company>V-Talk</Company>
     <Description>V-Talk LAN Messenger</Description>
-    <Version>1.1.0</Version>
+    <Version>1.4.5</Version>
+    <FileVersion>1.4.5.0</FileVersion>
+    <InformationalVersion>1.4.5</InformationalVersion>
+    <IncludeSourceRevisionInInformationalVersion>false</IncludeSourceRevisionInInformationalVersion>
     <SatelliteResourceLanguages>tr;en</SatelliteResourceLanguages>
     <InvariantGlobalization>false</InvariantGlobalization>
     <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
-    <!-- DPI farkındalığı WPF için app.manifest üzerinden yönetilir; WinForms yalnızca tepsi ikonu için kullanılır. -->
+    <!-- DPI farkÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±ndalÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±ÃƒÆ’Ã¢â‚¬ÂÃƒâ€¦Ã‚Â¸ÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â± WPF iÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§in app.manifest ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼zerinden yÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¶netilir; WinForms yalnÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±zca tepsi ikonu iÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§in kullanÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±lÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±r. -->
     <NoWarn>$(NoWarn);WFAC010</NoWarn>
   </PropertyGroup>
 
@@ -32,8 +35,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <PackageReference Include="Emoji.Wpf" Version="0.3.4" />
     <PackageReference Include="Microsoft.Data.Sqlite" Version="8.0.10" />
     <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- GÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¼venlik aÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±sÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±ndan kritik iÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§ yardÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±mcÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±lar (paket doÃƒÆ’Ã¢â‚¬ÂÃƒâ€¦Ã‚Â¸rulama, kurulum komutu) birim testlerinden ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â§aÃƒÆ’Ã¢â‚¬ÂÃƒâ€¦Ã‚Â¸rÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±lÃƒÆ’Ã¢â‚¬ÂÃƒâ€šÃ‚Â±r. -->
+    <InternalsVisibleTo Include="VTalk.Tests" />
   </ItemGroup>
 
   <Import Project="Obfuscation.targets" />

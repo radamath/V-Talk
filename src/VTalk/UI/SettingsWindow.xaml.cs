@@ -10,6 +10,8 @@ namespace VTalk.UI;
 public partial class SettingsWindow : Window
 {
     private readonly AppController _app;
+    private string _soundId;
+    private string? _customSoundPath;
 
     public SettingsWindow(AppController app)
     {
@@ -18,7 +20,11 @@ public partial class SettingsWindow : Window
         var s = app.Chat.Settings;
         NameBox.Text = s.DisplayName;
         SoundCheck.IsChecked = s.SoundEnabled;
-        SoundPathBox.Text = s.CustomSoundPath ?? "";
+        // Eski sürümde yalnızca özel dosya seçilmişse o seçili görünsün (SoundService ile aynı kural).
+        var (builtInId, customPath) = SoundService.ResolveMessageSound(s);
+        _soundId = customPath != null ? NotificationSounds.CustomId : builtInId;
+        _customSoundPath = customPath;
+        SoundNameText.Text = SoundPickerWindow.DisplayName(_soundId, _customSoundPath);
         NotifyCheck.IsChecked = s.ShowNotifications;
         PreviewCheck.IsChecked = s.ShowMessagePreview;
         PublicNetCheck.IsChecked = s.AllowPublicNetworks;
@@ -29,7 +35,8 @@ public partial class SettingsWindow : Window
         StartupCheck.IsChecked = s.StartWithWindows;
         MinimizedCheck.IsChecked = s.StartMinimized;
         AwayBox.Text = s.AutoAwayMinutes.ToString();
-        ExtraBox.Text = s.ExtraAddresses;
+        var networks = app.Chat.EffectiveNetworks;
+        NetworksInfo.Text = "Etkin uzak ağlar: " + (networks.Length > 0 ? networks : "(yok)");
 
         var chat = app.Chat;
         NetInfo.Text = $"Bu bilgisayar: TCP {chat.TcpPort}, UDP {Net.DiscoveryService.Port}. Güvenlik duvarında bu portlara yerel ağdan izin verilmelidir.";
@@ -38,29 +45,16 @@ public partial class SettingsWindow : Window
                             (chat.Directory.IsDeployedTrustRoot ? "\n               (BT tarafından dağıtılmış güven kökü)" : "");
     }
 
-    private void PickSound_Click(object sender, RoutedEventArgs e)
+    private void ChooseSound_Click(object sender, RoutedEventArgs e)
     {
-        var dlg = new OpenFileDialog { Title = "Bildirim sesi (.wav)", Filter = "WAV ses dosyası|*.wav" };
-        if (dlg.ShowDialog(this) != true) return;
-        if (!SoundService.IsUsableCustomSound(dlg.FileName))
-        {
-            MessageBox.Show(this, "Geçerli bir .wav dosyası seçin (en fazla 5 MB).", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-        SoundPathBox.Text = dlg.FileName;
+        var picker = new SoundPickerWindow(_app.Sounds, _soundId, _customSoundPath) { Owner = this };
+        if (picker.ShowDialog() != true) return;
+        _soundId = picker.SelectedId;
+        _customSoundPath = picker.SelectedCustomPath;
+        SoundNameText.Text = SoundPickerWindow.DisplayName(_soundId, _customSoundPath);
     }
 
-    private void ResetSound_Click(object sender, RoutedEventArgs e) => SoundPathBox.Text = "";
-
-    private void TestSound_Click(object sender, RoutedEventArgs e)
-    {
-        var s = _app.Chat.Settings;
-        var (enabled, path) = (s.SoundEnabled, s.CustomSoundPath);
-        s.SoundEnabled = true;
-        s.CustomSoundPath = SoundPathBox.Text.Length > 0 ? SoundPathBox.Text : null;
-        _app.Sounds.Play(SoundKind.Message);
-        (s.SoundEnabled, s.CustomSoundPath) = (enabled, path);
-    }
+    private void TestSound_Click(object sender, RoutedEventArgs e) => _app.Sounds.Preview(_soundId, _customSoundPath);
 
     private void PickFolder_Click(object sender, RoutedEventArgs e)
     {
@@ -86,14 +80,6 @@ public partial class SettingsWindow : Window
             MessageBox.Show(this, "Boşta kalma süresi 0–240 dakika arasında olmalı.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
-        var extras = Net.NetworkTargets.SplitEntries(ExtraBox.Text).ToArray();
-        var invalid = extras.FirstOrDefault(x => !Net.NetworkTargets.TryParse(x, out _, out _));
-        if (invalid != null)
-        {
-            MessageBox.Show(this, $"Geçersiz IPv4 adresi veya alt ağ: {invalid}\nÖrnek: 10.20.30.5 veya 10.20.30.0/24",
-                "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
         var folder = FolderBox.Text;
         try
         {
@@ -107,7 +93,9 @@ public partial class SettingsWindow : Window
 
         var s = _app.Chat.Settings;
         s.SoundEnabled = SoundCheck.IsChecked == true;
-        s.CustomSoundPath = SoundPathBox.Text.Length > 0 ? SoundPathBox.Text : null;
+        s.MessageSoundId = _soundId;
+        // Hazır ses seçilince eski özel yol temizlenir; aksi halde geriye uyumluluk kuralı onu çalardı.
+        s.CustomSoundPath = _soundId == NotificationSounds.CustomId ? _customSoundPath : null;
         s.ShowNotifications = NotifyCheck.IsChecked == true;
         s.ShowMessagePreview = PreviewCheck.IsChecked == true;
         s.AllowPublicNetworks = PublicNetCheck.IsChecked == true;
@@ -119,8 +107,7 @@ public partial class SettingsWindow : Window
         s.StartWithWindows = StartupCheck.IsChecked == true;
         s.StartMinimized = MinimizedCheck.IsChecked == true;
         s.AutoAwayMinutes = away;
-        s.ExtraAddresses = string.Join(", ", extras);
-        _app.Chat.Network.SetAllowedRemotes(s.ExtraAddresses);
+        _app.Chat.RefreshAllowedRemotes();
         _app.Chat.UpdateProfile(displayName: name);
         StartupRegistration.Apply(s.StartWithWindows);
         DialogResult = true;

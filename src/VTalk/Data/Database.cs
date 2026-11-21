@@ -14,6 +14,9 @@ public sealed class ContactRecord
     public string Note { get; set; } = "";
     public string? AvatarHash { get; set; }
     public long LastSeen { get; set; }
+    /// <summary>İmzalı duyurudan öğrenilen son TCP uç noktası (yeniden başlatmadan sonra erişilebilirlik yoklaması için).</summary>
+    public string? Address { get; set; }
+    public int Port { get; set; }
 }
 
 /// <summary>
@@ -66,7 +69,372 @@ public sealed class Database : IDisposable
             );
             CREATE INDEX IF NOT EXISTS ix_messages_peer ON messages(peer_id, row_id);
             CREATE INDEX IF NOT EXISTS ix_messages_pending ON messages(state, direction);
+            CREATE TABLE IF NOT EXISTS chat_groups (
+                group_id    TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                created_by  TEXT NOT NULL,
+                created_ts  INTEGER NOT NULL,
+                members     BLOB NOT NULL
+            );
             """);
+        TryAddColumn("chat_groups", "temporary", "INTEGER NOT NULL DEFAULT 0");
+        Exec("""
+            CREATE TABLE IF NOT EXISTS conversation_reads (
+                peer_id TEXT PRIMARY KEY,
+                last_read_row_id INTEGER NOT NULL DEFAULT 0
+            );
+            """);
+        // Giden mesajların alıcı başına teslim/okunma zamanı (1:1'de alıcı karşı taraf, grupta her üye).
+        // receipts_sent: bu sohbette okundu bildirimi gönderilen son gelen mesajın satırı.
+        Exec("""
+            CREATE TABLE IF NOT EXISTS message_receipts (
+                peer_id      TEXT NOT NULL,
+                msg_id       TEXT NOT NULL,
+                member       TEXT NOT NULL,
+                delivered_ts INTEGER NOT NULL DEFAULT 0,
+                read_ts      INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY(peer_id, msg_id, member)
+            );
+            CREATE TABLE IF NOT EXISTS receipts_sent (
+                peer_id TEXT PRIMARY KEY,
+                row_id  INTEGER NOT NULL DEFAULT 0
+            );
+            """);
+    }
+
+    // ---- Teslim / okundu bilgisi ----
+
+    /// <summary>Alıcının teslim aldığını ve isteğe bağlı olarak okuduğunu kaydeder; zamanlar yalnızca ileri gider.</summary>
+    public void MarkReceipt(string conversationId, string msgId, string member, bool read)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO message_receipts(peer_id, msg_id, member, delivered_ts, read_ts) VALUES($p, $m, $who, $now, $read)
+                ON CONFLICT(peer_id, msg_id, member) DO UPDATE SET
+                  delivered_ts = CASE WHEN message_receipts.delivered_ts > 0 THEN message_receipts.delivered_ts ELSE excluded.delivered_ts END,
+                  read_ts = CASE WHEN message_receipts.read_ts > 0 THEN message_receipts.read_ts ELSE excluded.read_ts END;
+                """;
+            cmd.Parameters.AddWithValue("$p", conversationId);
+            cmd.Parameters.AddWithValue("$m", msgId);
+            cmd.Parameters.AddWithValue("$who", member);
+            cmd.Parameters.AddWithValue("$now", now);
+            cmd.Parameters.AddWithValue("$read", read ? now : 0);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Bir mesajın alıcı başına durumu: üye → (teslim, okundu).</summary>
+    public Dictionary<string, (bool Delivered, bool Read)> GetReceipts(string conversationId, string msgId)
+    {
+        var result = new Dictionary<string, (bool, bool)>(StringComparer.OrdinalIgnoreCase);
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT member, delivered_ts, read_ts FROM message_receipts WHERE peer_id = $p AND msg_id = $m;";
+            cmd.Parameters.AddWithValue("$p", conversationId);
+            cmd.Parameters.AddWithValue("$m", msgId);
+            using var r = cmd.ExecuteReader();
+            while (r.Read()) result[r.GetString(0)] = (r.GetInt64(1) > 0 || r.GetInt64(2) > 0, r.GetInt64(2) > 0);
+        }
+        return result;
+    }
+
+    public long GetReceiptsSentRowId(string conversationId)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT row_id FROM receipts_sent WHERE peer_id = $p;";
+            cmd.Parameters.AddWithValue("$p", conversationId);
+            return cmd.ExecuteScalar() is long l ? l : 0;
+        }
+    }
+
+    public void SetReceiptsSentRowId(string conversationId, long rowId)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO receipts_sent(peer_id, row_id) VALUES($p, $r)
+                ON CONFLICT(peer_id) DO UPDATE SET row_id = max(receipts_sent.row_id, excluded.row_id);
+                """;
+            cmd.Parameters.AddWithValue("$p", conversationId);
+            cmd.Parameters.AddWithValue("$r", rowId);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    private const int SearchBatchSize = 1000;
+    private static readonly System.Globalization.CompareInfo SearchCompare = System.Globalization.CultureInfo.GetCultureInfo("tr-TR").CompareInfo;
+
+    /// <summary>
+    /// Mesajlarda arama (yeniden eskiye). İçerik şifreli saklandığı için SQL ile aranamaz: satırlar 1000'erli
+    /// gruplar halinde çözülüp süzülür; kilit yalnızca grup okunurken tutulur, gelen mesajlar beklemez.
+    /// Büyük/küçük harf ve Türkçe İ/ı duyarsızdır. Metin, dosya adı ve duyurular aranır.
+    /// </summary>
+    public List<StoredMessage> SearchMessages(string? conversationId, string query, int maxResults, int maxScanned, CancellationToken ct = default)
+    {
+        var results = new List<StoredMessage>();
+        query = query.Trim();
+        if (query.Length == 0) return results;
+        var before = long.MaxValue;
+        var scanned = 0;
+        while (results.Count < maxResults && scanned < maxScanned && !ct.IsCancellationRequested)
+        {
+            var batch = new List<StoredMessage>();
+            lock (_gate)
+            {
+                using var cmd = _conn.CreateCommand();
+                cmd.CommandText = conversationId == null
+                    ? "SELECT row_id, peer_id, msg_id, direction, kind, ts, state, data FROM messages WHERE row_id < $before ORDER BY row_id DESC LIMIT $limit;"
+                    : "SELECT row_id, peer_id, msg_id, direction, kind, ts, state, data FROM messages WHERE peer_id = $p AND row_id < $before ORDER BY row_id DESC LIMIT $limit;";
+                cmd.Parameters.AddWithValue("$before", before);
+                cmd.Parameters.AddWithValue("$limit", SearchBatchSize);
+                if (conversationId != null) cmd.Parameters.AddWithValue("$p", conversationId);
+                using var r = cmd.ExecuteReader();
+                while (r.Read())
+                {
+                    before = r.GetInt64(0);
+                    if (ReadMessage(r) is { } m) batch.Add(m);
+                }
+            }
+            if (batch.Count == 0) break;
+            scanned += batch.Count;
+            foreach (var m in batch)
+            {
+                if (!Matches(m, query)) continue;
+                results.Add(m);
+                if (results.Count >= maxResults) break;
+            }
+        }
+        return results;
+    }
+
+    private static bool Matches(StoredMessage m, string query)
+    {
+        var text = m.Kind == MessageKind.File ? m.Data.FileName : m.Data.Text;
+        return text != null && SearchCompare.IndexOf(text, query, System.Globalization.CompareOptions.IgnoreCase) >= 0;
+    }
+
+    /// <summary>Aramada eşleşmenin metindeki konumu (vurgu ve alıntı için); yoksa -1.</summary>
+    public static int MatchIndex(string text, string query) =>
+        SearchCompare.IndexOf(text, query.Trim(), System.Globalization.CompareOptions.IgnoreCase);
+
+    /// <summary>
+    /// Grup çevrimdışı kuyruğu: üyenin henüz teslim almadığı giden grup metinleri (eskiden yeniye). Teslim bilgisi
+    /// message_receipts'ten gelir; üye onaylayınca kuyruktan kendiliğinden düşer.
+    /// </summary>
+    public List<StoredMessage> LoadUndeliveredGroupMessages(string conversationId, string member, long sinceTs, int limit)
+    {
+        var list = new List<StoredMessage>();
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT row_id, peer_id, msg_id, direction, kind, ts, state, data FROM messages m
+                WHERE m.peer_id = $p AND m.direction = $dir AND m.kind = $text AND m.ts >= $since
+                  AND NOT EXISTS (SELECT 1 FROM message_receipts r
+                                  WHERE r.peer_id = m.peer_id AND r.msg_id = m.msg_id AND r.member = $who
+                                    AND (r.delivered_ts > 0 OR r.read_ts > 0))
+                ORDER BY m.row_id LIMIT $limit;
+                """;
+            cmd.Parameters.AddWithValue("$p", conversationId);
+            cmd.Parameters.AddWithValue("$dir", (int)MessageDirection.Outgoing);
+            cmd.Parameters.AddWithValue("$text", (int)MessageKind.Text);
+            cmd.Parameters.AddWithValue("$since", sinceTs);
+            cmd.Parameters.AddWithValue("$who", member);
+            cmd.Parameters.AddWithValue("$limit", limit);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                if (ReadMessage(r) is { } m) list.Add(m);
+        }
+        return list;
+    }
+
+    /// <summary>Okundu bildirimi henüz gönderilmemiş gelen metin/dosya mesajları (eskiden yeniye).</summary>
+    public List<StoredMessage> LoadIncomingAfter(string conversationId, long afterRowId, int limit)
+    {
+        var list = new List<StoredMessage>();
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                SELECT row_id, peer_id, msg_id, direction, kind, ts, state, data FROM messages
+                WHERE peer_id = $p AND row_id > $after AND direction = $dir AND kind IN ($text, $file)
+                ORDER BY row_id LIMIT $limit;
+                """;
+            cmd.Parameters.AddWithValue("$p", conversationId);
+            cmd.Parameters.AddWithValue("$after", afterRowId);
+            cmd.Parameters.AddWithValue("$dir", (int)MessageDirection.Incoming);
+            cmd.Parameters.AddWithValue("$text", (int)MessageKind.Text);
+            cmd.Parameters.AddWithValue("$file", (int)MessageKind.File);
+            cmd.Parameters.AddWithValue("$limit", limit);
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+                if (ReadMessage(r) is { } m) list.Add(m);
+        }
+        return list;
+    }
+
+    public long GetLastReadRowId(string peerId)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT last_read_row_id FROM conversation_reads WHERE peer_id = $p;";
+            cmd.Parameters.AddWithValue("$p", peerId);
+            var v = cmd.ExecuteScalar();
+            return v is long l ? l : v is int i ? i : 0;
+        }
+    }
+
+    public long GetMaxMessageRowId(string peerId)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT IFNULL(MAX(row_id), 0) FROM messages WHERE peer_id = $p;";
+            cmd.Parameters.AddWithValue("$p", peerId);
+            var v = cmd.ExecuteScalar();
+            return v is long l ? l : Convert.ToInt64(v ?? 0);
+        }
+    }
+
+    public void SetLastReadRowId(string peerId, long rowId)
+    {
+        if (rowId < 0) rowId = 0;
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO conversation_reads(peer_id, last_read_row_id) VALUES($p, $r)
+                ON CONFLICT(peer_id) DO UPDATE SET
+                  last_read_row_id = max(conversation_reads.last_read_row_id, excluded.last_read_row_id);
+                """;
+            cmd.Parameters.AddWithValue("$p", peerId);
+            cmd.Parameters.AddWithValue("$r", rowId);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <summary>Şema yükseltmesi; tablo/sütun adları sabit koddan gelir, kullanıcı girdisi değildir.</summary>
+    private void TryAddColumn(string table, string column, string decl)
+    {
+        if (ColumnExists(table, column)) return;
+        Exec($"ALTER TABLE {table} ADD COLUMN {column} {decl};");
+    }
+
+    private bool ColumnExists(string table, string column)
+    {
+        using var cmd = _conn.CreateCommand();
+        cmd.CommandText = "SELECT COUNT(*) FROM pragma_table_info($table) WHERE name = $column;";
+        cmd.Parameters.AddWithValue("$table", table);
+        cmd.Parameters.AddWithValue("$column", column);
+        return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+    }
+
+    // ---- Sohbet grupları ----
+
+    public List<ChatGroup> ListChatGroups()
+    {
+        var list = new List<ChatGroup>();
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT group_id, name, created_by, created_ts, members, IFNULL(temporary,0) FROM chat_groups ORDER BY name COLLATE NOCASE;";
+            using var r = cmd.ExecuteReader();
+            while (r.Read())
+            {
+                var g = ReadChatGroup(r);
+                if (g != null) list.Add(g);
+            }
+        }
+        return list;
+    }
+
+    public ChatGroup? GetChatGroup(string groupId)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "SELECT group_id, name, created_by, created_ts, members, IFNULL(temporary,0) FROM chat_groups WHERE group_id = $id;";
+            cmd.Parameters.AddWithValue("$id", groupId);
+            using var r = cmd.ExecuteReader();
+            return r.Read() ? ReadChatGroup(r) : null;
+        }
+    }
+
+    public void UpsertChatGroup(ChatGroup group)
+    {
+        var members = _protector.EncryptString(JsonSerializer.Serialize(group.MemberIds), "chatgroup:" + group.Id);
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = """
+                INSERT INTO chat_groups(group_id, name, created_by, created_ts, members, temporary)
+                VALUES($id, $name, $by, $ts, $members, $tmp)
+                ON CONFLICT(group_id) DO UPDATE SET
+                  name = $name,
+                  members = $members,
+                  temporary = CASE WHEN chat_groups.temporary != 0 OR $tmp != 0 THEN 1 ELSE 0 END;
+                """;
+            cmd.Parameters.AddWithValue("$id", group.Id);
+            cmd.Parameters.AddWithValue("$name", group.Name);
+            cmd.Parameters.AddWithValue("$by", group.CreatedBy);
+            cmd.Parameters.AddWithValue("$ts", group.CreatedUtc);
+            cmd.Parameters.AddWithValue("$members", members);
+            cmd.Parameters.AddWithValue("$tmp", group.Temporary ? 1 : 0);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    /// <param name="keepMessages">
+    /// Uzaktan çıkarılmada true: grup listeden kalkar, geçmiş korunur ve aynı gruba yeniden davet edilince görünür.
+    /// Kullanıcı gruptan kendisi ayrıldığında false: geçmiş de silinir.
+    /// </param>
+    public void DeleteChatGroup(string groupId, bool keepMessages = false)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            if (!keepMessages)
+            {
+                cmd.CommandText = "DELETE FROM messages WHERE peer_id = $conv;";
+                cmd.Parameters.AddWithValue("$conv", ChatGroup.ToConversationId(groupId));
+                cmd.ExecuteNonQuery();
+            }
+            cmd.CommandText = "DELETE FROM chat_groups WHERE group_id = $id;";
+            cmd.Parameters.AddWithValue("$id", groupId);
+            cmd.ExecuteNonQuery();
+        }
+    }
+
+    private ChatGroup? ReadChatGroup(SqliteDataReader r)
+    {
+        try
+        {
+            var id = r.GetString(0);
+            var members = JsonSerializer.Deserialize<List<string>>(
+                _protector.DecryptString((byte[])r[4], "chatgroup:" + id)) ?? [];
+            return new ChatGroup
+            {
+                Id = id,
+                Name = r.GetString(1),
+                CreatedBy = r.GetString(2),
+                CreatedUtc = r.GetInt64(3),
+                MemberIds = members,
+                Temporary = r.FieldCount > 5 && !r.IsDBNull(5) && r.GetInt64(5) != 0,
+            };
+        }
+        catch (Exception ex)
+        {
+            Log.Warn("Sohbet grubu okunamadı: " + ex.Message);
+            return null;
+        }
     }
 
     private void Exec(string sql)
@@ -85,6 +453,8 @@ public sealed class Database : IDisposable
         public string Machine { get; set; } = "";
         public string Note { get; set; } = "";
         public string? AvatarHash { get; set; }
+        public string? Address { get; set; }
+        public int Port { get; set; }
     }
 
     public void UpsertContact(ContactRecord c)
@@ -92,6 +462,7 @@ public sealed class Database : IDisposable
         var info = JsonSerializer.Serialize(new ContactInfo
         {
             Name = c.Name, User = c.User, Machine = c.Machine, Note = c.Note, AvatarHash = c.AvatarHash,
+            Address = c.Address, Port = c.Port,
         });
         lock (_gate)
         {
@@ -128,6 +499,7 @@ public sealed class Database : IDisposable
                     {
                         PeerId = peerId, PublicKey = pk, Name = info.Name, User = info.User,
                         Machine = info.Machine, Note = info.Note, AvatarHash = info.AvatarHash, LastSeen = r.GetInt64(3),
+                        Address = info.Address, Port = info.Port,
                     });
                 }
                 catch (Exception ex)
@@ -137,6 +509,20 @@ public sealed class Database : IDisposable
             }
         }
         return list;
+    }
+
+    /// <summary>Kişiyi ve onunla olan yerel mesaj kayıtlarını siler.</summary>
+    public void DeleteContact(string peerId)
+    {
+        lock (_gate)
+        {
+            using var cmd = _conn.CreateCommand();
+            cmd.CommandText = "DELETE FROM messages WHERE peer_id = $id;";
+            cmd.Parameters.AddWithValue("$id", peerId);
+            cmd.ExecuteNonQuery();
+            cmd.CommandText = "DELETE FROM contacts WHERE peer_id = $id;";
+            cmd.ExecuteNonQuery();
+        }
     }
 
     // ---- Mesajlar ----

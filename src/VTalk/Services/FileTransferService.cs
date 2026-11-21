@@ -226,7 +226,15 @@ public sealed class FileTransferService
             partPath = null;
             MarkOfTheWeb(finalPath);
 
-            try { await channel.SendAsync(new Packet { T = PacketTypes.FileDone, Id = m.MsgId }.Serialize(), ct); } catch { }
+            try
+            {
+                await channel.SendAsync(new Packet { T = PacketTypes.FileDone, Id = m.MsgId }.Serialize(), ct);
+            }
+            catch (Exception ex) when (IsChannelError(ex))
+            {
+                // Dosya zaten diske yazıldı; onay gitmezse gönderen yalnızca zaman aşımıyla kapatır.
+                Log.Info("Dosya tamamlandı onayı gönderilemedi: " + ex.Message);
+            }
 
             m.Data.FilePath = finalPath;
             if (m.Data.IsImage && !ImageSafety.IsSafeImage(finalPath)) m.Data.IsImage = false;
@@ -247,7 +255,7 @@ public sealed class FileTransferService
         {
             if (slot) _downloadSlots.Release();
             if (channel != null) await channel.DisposeAsync();
-            if (partPath != null) try { File.Delete(partPath); } catch { }
+            if (partPath != null) TryDeletePart(partPath);
             if (_downloads.TryRemove(m.MsgId, out var cts)) cts.Dispose();
         }
     }
@@ -360,6 +368,28 @@ public sealed class FileTransferService
 
     private static async Task TrySend(SecureChannel channel, Packet p)
     {
-        try { await channel.SendAsync(p.Serialize()); } catch { }
+        try
+        {
+            await channel.SendAsync(p.Serialize());
+        }
+        catch (Exception ex) when (IsChannelError(ex))
+        {
+            Log.Info($"Dosya aktarım yanıtı gönderilemedi ({p.T}): {ex.Message}");
+        }
+    }
+
+    private static bool IsChannelError(Exception ex) =>
+        ex is IOException or System.Net.Sockets.SocketException or OperationCanceledException or ObjectDisposedException;
+
+    private static void TryDeletePart(string partPath)
+    {
+        try
+        {
+            File.Delete(partPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Log.Warn($"Yarım dosya silinemedi ({Path.GetFileName(partPath)}): {ex.Message}");
+        }
     }
 }

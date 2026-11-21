@@ -19,6 +19,8 @@ public sealed class PeerServer : IDisposable
     private readonly Identity _identity;
     private readonly PacketHandler _handler;
     private readonly Func<SecureChannel, Packet, Task> _fileRequestHandler;
+    private readonly Func<SecureChannel, Packet, Task>? _updateRequestHandler;
+    private readonly Action<PeerConnection>? _onMessagingConnection;
     private readonly NetworkGuard _guard;
     private readonly object _gate = new();
     private readonly Dictionary<IPAddress, int> _perAddress = new();
@@ -29,11 +31,15 @@ public sealed class PeerServer : IDisposable
 
     public int Port { get; private set; }
 
-    public PeerServer(Identity identity, PacketHandler handler, Func<SecureChannel, Packet, Task> fileRequestHandler, NetworkGuard guard)
+    public PeerServer(Identity identity, PacketHandler handler, Func<SecureChannel, Packet, Task> fileRequestHandler, NetworkGuard guard,
+        Func<SecureChannel, Packet, Task>? updateRequestHandler = null,
+        Action<PeerConnection>? onMessagingConnection = null)
     {
         _identity = identity;
         _handler = handler;
         _fileRequestHandler = fileRequestHandler;
+        _updateRequestHandler = updateRequestHandler;
+        _onMessagingConnection = onMessagingConnection;
         _guard = guard;
     }
 
@@ -128,18 +134,31 @@ public sealed class PeerServer : IDisposable
                 await _fileRequestHandler(channel, first);
                 return;
             }
+            if (first.T == PacketTypes.UpdateGet && _updateRequestHandler != null)
+            {
+                await _updateRequestHandler(channel, first);
+                return;
+            }
 
             var connection = new PeerConnection(channel);
             channel = null; // Sahiplik PeerConnection'a geçti.
+            // Havuza al: giden Connect başarısız olsa bile bu kanal üzerinden cevap gönderilebilir.
+            try { _onMessagingConnection?.Invoke(connection); }
+            catch (Exception ex) { Log.Warn("Gelen bağlantı havuza alınamadı: " + ex.Message); }
             await connection.RunAsync(_handler, first, IdleTimeout, ct);
         }
         catch (Exception ex) when (ex is ProtocolException or System.Security.Cryptography.CryptographicException)
         {
             Log.Warn($"Gelen bağlantı reddedildi ({address}): {ex.Message}");
         }
-        catch
+        catch (Exception ex) when (ex is System.IO.IOException or SocketException or OperationCanceledException or ObjectDisposedException)
         {
-            // Zaman aşımı / bağlantı kopması.
+            // Zaman aşımı / bağlantı kopması olağandır (her yoklama bağlantısı böyle kapanır); günlüğe yazılmaz.
+            // Beklenmeyen türler aşağıda uyarı olarak yazılır.
+        }
+        catch (Exception ex)
+        {
+            Log.Warn($"Gelen bağlantı beklenmedik hatayla kapandı ({address}): {ex.GetType().Name}: {ex.Message}");
         }
         finally
         {

@@ -55,6 +55,8 @@ public sealed class ContactViewModel : ObservableObject
     public const string UnverifiedGroup = "Doğrulanmamış kişiler";
     public const string NoUnitGroup = "Birimsiz";
     public const string GeneralGroup = "Genel";
+    public const string GroupsSection = "Gruplar";
+    public const string TemporaryGroupsSection = "Geçici sohbetler";
 
     private string _name = "";
     private string _note = "";
@@ -69,10 +71,13 @@ public sealed class ContactViewModel : ObservableObject
     private int _unread;
     private string _machine = "";
     private string _user = "";
+    private bool _showIdentity;
+    private bool _isGroupChat;
 
     public ContactViewModel(string peerId) => PeerId = peerId;
 
     public string PeerId { get; }
+    public bool IsGroupChat => _isGroupChat;
     public string Name { get => _name; private set => Set(ref _name, value); }
     public string Note { get => _note; private set { if (Set(ref _note, value)) Raise(nameof(HasNote)); } }
     public bool HasNote => !string.IsNullOrWhiteSpace(Note);
@@ -93,7 +98,7 @@ public sealed class ContactViewModel : ObservableObject
     public string StatusText => StatusNames.ToDisplay(Status);
     public Role Role { get => _role; private set { if (Set(ref _role, value)) { Raise(nameof(RoleText)); Raise(nameof(HasRoleBadge)); } } }
     public string RoleText => RoleNames.ToDisplay(Role);
-    public bool HasRoleBadge => Role != Role.User;
+    public bool HasRoleBadge => !_isGroupChat && Role != Role.User;
     public string? UnitName { get => _unitName; private set => Set(ref _unitName, value); }
     public string GroupName { get => _groupName; private set => Set(ref _groupName, value); }
     public int GroupOrder { get => _groupOrder; private set => Set(ref _groupOrder, value); }
@@ -103,14 +108,46 @@ public sealed class ContactViewModel : ObservableObject
     public bool HasUnread => Unread > 0;
     public string Machine { get => _machine; private set => Set(ref _machine, value); }
     public string User { get => _user; private set => Set(ref _user, value); }
-    public string ShortId => PeerId[..8];
-    public string Tooltip => $"{Name}\nKullanıcı: {User}\nBilgisayar: {Machine}\nDurum: {StatusText}\nKimlik: {ShortId}" +
-                             (IsVerified ? "" : "\n⚠ Admin dizininde doğrulanmamış");
+    public string ShortId => PeerId.Length >= 8 ? PeerId[..8] : PeerId;
+    public string Tooltip => _isGroupChat
+        ? $"{Name}\nGrup sohbeti\n{Note}"
+        : $"{Name}\nKullanıcı: {User}\nBilgisayar: {Machine}\nDurum: {StatusText}" +
+          (_showIdentity ? $"\nKimlik: {ShortId}" : "") +
+          (IsVerified ? "" : "\n⚠ Admin dizininde doğrulanmamış");
 
-    public void Update(PeerSnapshot s, DirectoryService dir)
+    public void ApplyChatGroup(ChatGroup group, PresenceStatus status)
     {
+        _isGroupChat = true;
+        _showIdentity = false;
+        Name = group.Name;
+        Note = group.Temporary
+            ? $"Geçici · {Math.Max(0, group.MemberIds.Count - 1)} kişi"
+            : $"{group.MemberIds.Count} üye";
+        Status = status;
+        Machine = "";
+        User = "";
+        Role = Role.User;
+        UnitName = null;
+        IsVerified = true;
+        GroupName = group.Temporary ? TemporaryGroupsSection : GroupsSection;
+        GroupOrder = group.Temporary ? -2 : -1;
+        Avatar = null;
+        _avatarHash = null;
+        Raise(nameof(HasRoleBadge));
+        Raise(nameof(Tooltip));
+    }
+
+    public void Update(PeerSnapshot s, DirectoryService dir, bool showIdentity)
+    {
+        _isGroupChat = false;
+        _showIdentity = showIdentity;
         var member = dir.GetMember(PeerId);
-        Name = member is { Name.Length: > 0 } ? member.Name : (s.Name.Length > 0 ? s.Name : ShortId);
+        Name = member is { Name.Length: > 0 } ? member.Name
+            : s.Name.Length > 0 ? s.Name
+            : showIdentity ? ShortId
+            : s.User.Length > 0 ? s.User
+            : s.Machine.Length > 0 ? s.Machine
+            : "Adsız kişi";
         Note = s.Note;
         Status = s.IsOnline ? s.Status : PresenceStatus.Offline;
         Machine = s.Machine;
@@ -140,6 +177,7 @@ public sealed class ContactViewModel : ObservableObject
             _avatarHash = s.AvatarHash;
             Avatar = s.AvatarHash == null ? null : ImageLoader.Load(ChatService.AvatarCachePath(s.AvatarHash), 96);
         }
+        Raise(nameof(HasRoleBadge));
         Raise(nameof(Tooltip));
     }
 }
@@ -147,6 +185,7 @@ public sealed class ContactViewModel : ObservableObject
 public sealed class MessageViewModel : ObservableObject
 {
     private StoredMessage _model;
+    private readonly List<StoredMessage> _parts = [];
     private double _progress;
     private string _progressText = "";
     private ImageSource? _image;
@@ -155,30 +194,96 @@ public sealed class MessageViewModel : ObservableObject
     public MessageViewModel(StoredMessage model, string senderName)
     {
         _model = model;
+        _parts.Add(model);
         SenderName = senderName;
     }
 
     public StoredMessage Model => _model;
-    public long RowId => _model.RowId;
+    public long RowId => _parts[0].RowId;
+    public long MaxRowId => _parts.Max(p => p.RowId);
     public string MsgId => _model.MsgId;
     public bool IsOutgoing => _model.Direction == MessageDirection.Outgoing;
-    public MessageKind Kind => _model.Kind;
+    public MessageKind Kind => _parts[0].Kind;
     public string SenderName { get; set; }
     public bool ShowHeader { get; set; } = true;
-    public string TimeText => DateTimeOffset.FromUnixTimeMilliseconds(_model.Timestamp).LocalDateTime.ToString("dd.MM.yyyy HH:mm");
-    public string ShortTime => DateTimeOffset.FromUnixTimeMilliseconds(_model.Timestamp).LocalDateTime.ToString("HH:mm");
-    public DateTime LocalTime => DateTimeOffset.FromUnixTimeMilliseconds(_model.Timestamp).LocalDateTime;
-    public string Text => _model.Data.Text ?? "";
+    public string TimeText => RemoteTimestamp.ToLocalTime(_parts[0].Timestamp).ToString("dd.MM.yyyy HH:mm");
+    public string ShortTime => RemoteTimestamp.ToLocalTime(_parts[0].Timestamp).ToString("HH:mm");
+    /// <summary>Küme birleştirmede son parçanın zamanı (sonraki mesajla komşuluk).</summary>
+    public DateTime LocalTime => RemoteTimestamp.ToLocalTime(_parts[^1].Timestamp);
+    /// <summary>Ardışık Enter gönderimleri tek balonda; seçim için \n ile birleşik.</summary>
+    public string Text => string.Join("\n", _parts.Select(p => p.Data.Text ?? ""));
 
-    public string DeliveryText => !IsOutgoing ? "" : _model.State switch
+    public bool ContainsRow(long rowId) => _parts.Any(p => p.RowId == rowId);
+
+    public void MergeAppend(StoredMessage m)
     {
-        MessageState.Pending => "⏳ Bekliyor (kişi çevrimdışı olabilir)",
-        MessageState.Failed => "⚠ İletilemedi",
-        _ => "",
-    };
+        _parts.Add(m);
+        _model = m;
+        Raise(nameof(Text));
+        Raise(nameof(DeliveryText));
+        Raise(nameof(HasDeliveryText));
+        Raise(nameof(LocalTime));
+    }
+
+    public void MergePrepend(StoredMessage m)
+    {
+        _parts.Insert(0, m);
+        Raise(nameof(Text));
+        Raise(nameof(TimeText));
+        Raise(nameof(ShortTime));
+        Raise(nameof(RowId));
+        Raise(nameof(DeliveryText));
+        Raise(nameof(HasDeliveryText));
+    }
+
+    public string DeliveryText
+    {
+        get
+        {
+            if (!IsOutgoing) return "";
+            if (_parts.Any(p => p.State == MessageState.Failed)) return "⚠ İletilemedi";
+            if (_parts.Any(p => p.State == MessageState.Pending)) return "⏳ Bekliyor (kişi çevrimdışı olabilir)";
+            return "";
+        }
+    }
     public bool HasDeliveryText => DeliveryText.Length > 0;
 
+    // ---- Yanıt alıntısı (balonun ilk mesajı; yanıt içeren mesaj başka balonla birleşmez) ----
+    public string ReplySenderName { get; set; } = "";
+    public bool HasReply => !string.IsNullOrEmpty(_parts[0].Data.ReplyToMsgId);
+    public string? ReplyToMsgId => _parts[0].Data.ReplyToMsgId;
+    public string ReplyQuote => _parts[0].Data.ReplyToText ?? "";
+    public bool ContainsMsgId(string msgId) => _parts.Any(p => p.MsgId == msgId);
+
+    // ---- Teslim / okundu tiki (yalnızca giden metin) ----
+    private ReceiptStatus _receipt = ReceiptStatus.None;
+    public IReadOnlyList<StoredMessage> Parts => _parts;
+    public bool ShowReceipt => _receipt.State != ReceiptState.None;
+    public bool IsReceiptRead => _receipt.State == ReceiptState.Read;
+    public string ReceiptToolTip => _receipt.State switch
+    {
+        ReceiptState.Read => _receipt.Recipients > 1 ? "Herkes okudu" : "Okundu",
+        ReceiptState.Delivered => _receipt.Recipients > 1
+            ? $"Herkese teslim edildi • Okuyan {_receipt.ReadCount}/{_receipt.Recipients}"
+            : "Teslim edildi",
+        _ => "",
+    };
+
+    public void SetReceipt(ReceiptStatus status)
+    {
+        if (status == _receipt) return;
+        _receipt = status;
+        Raise(nameof(ShowReceipt));
+        Raise(nameof(IsReceiptRead));
+        Raise(nameof(ReceiptToolTip));
+    }
+
     public string BulletinTitle => _model.Data.Scope == ChatService.ScopeAll ? "📢 Genel Duyuru" : "📢 Birim Duyurusu";
+
+    // Sohbet penceresinde seçilebilir metin kutularının tek satırlık içerikleri (TextBlock Run'ları seçilemez).
+    public string BulletinHeaderText => $"{BulletinTitle} — {SenderName}";
+    public string NudgeText => $"{SenderName} bir titreşim gönderdi. ({ShortTime})";
+    public string FileInfoText => $"{FileSizeText} • {FileStateText}";
 
     // ---- Dosya ----
     public string FileName => _model.Data.FileName ?? "";
@@ -230,12 +335,16 @@ public sealed class MessageViewModel : ObservableObject
 
     public void Update(StoredMessage m)
     {
-        _model = m;
+        var idx = _parts.FindIndex(p => p.RowId == m.RowId);
+        if (idx >= 0) _parts[idx] = m;
+        else _parts.Add(m);
+        _model = _parts[^1];
         _imageLoaded = false;
         _image = null;
         foreach (var name in new[]
                  {
                      nameof(Text), nameof(DeliveryText), nameof(HasDeliveryText), nameof(FileState), nameof(FileStateText),
+                     nameof(FileInfoText),
                      nameof(CanAccept), nameof(CanReject), nameof(CanCancel), nameof(CanOpen), nameof(IsTransferring),
                      nameof(FileAvailable), nameof(Image), nameof(ShowImage), nameof(IsImage), nameof(FilePath),
                  })

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text.Json;
 using VTalk.Core;
@@ -15,7 +16,7 @@ namespace VTalk.Services;
 /// doğrulanması, rol tabanlı duyuru yetkisi ve dizin/avatar senkronizasyonu.
 /// Olaylar arka plan iş parçacıklarında tetiklenir; arayüz kendi Dispatcher'ına aktarmalıdır.
 /// </summary>
-public sealed class ChatService : IDisposable
+public sealed partial class ChatService : IDisposable
 {
     public const string ScopeAll = "all";
     public const string ScopeUnit = "unit";
@@ -25,6 +26,13 @@ public sealed class ChatService : IDisposable
     private const int MaxNewIdentitiesPerAddress = 20;
     private static readonly TimeSpan PresenceTimeout = TimeSpan.FromSeconds(20);
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan GroupSyncInterval = TimeSpan.FromSeconds(20);
+    /// <summary>Grup çevrimdışı kuyruğu: bu yaştan eski veya bu sayıdan fazla eksik mesaj yeniden gönderilmez.</summary>
+    private static readonly TimeSpan GroupQueueMaxAge = TimeSpan.FromDays(14);
+    private const int GroupQueueMaxMessages = 300;
+    /// <summary>Kuyruk boşaltılırken mesaj arası bekleme: alıcının 10 sn'de 40 istek sınırının altında kalır.</summary>
+    private static readonly TimeSpan GroupQueueSpacing = TimeSpan.FromMilliseconds(400);
+    private const int MaxBusyWaits = 3;
     private static readonly TimeSpan InboundWindow = TimeSpan.FromSeconds(10);
     private static readonly TimeSpan NewIdentityWindow = TimeSpan.FromMinutes(10);
 
@@ -36,6 +44,7 @@ public sealed class ChatService : IDisposable
     public FileTransferService Files { get; }
     public NetworkGuard Network { get; }
 
+    private readonly AppUpdate _update;
     private readonly DiscoveryService _discovery;
     private readonly PeerServer _server;
     private readonly ConnectionPool _pool;
@@ -46,6 +55,9 @@ public sealed class ChatService : IDisposable
     private readonly ConcurrentDictionary<string, byte> _avatarFetching = new();
     private readonly ConcurrentDictionary<string, (DateTime window, int count)> _inboundRate = new();
     private readonly ConcurrentDictionary<string, DateTime> _lastNudge = new();
+    private readonly ConcurrentDictionary<string, DateTime> _lastGroupSync = new();
+    private readonly ConcurrentDictionary<string, byte> _groupSyncRunning = new();
+    private readonly DeliveryBackoff _deliveryBackoff = new();
     private readonly ConcurrentDictionary<IPAddress, (DateTime window, int count)> _newIdentities = new();
     private Timer? _presenceTimer;
     private Timer? _flushTimer;
@@ -61,47 +73,78 @@ public sealed class ChatService : IDisposable
     public event Action<StoredMessage>? BulletinReceived;
     public event Action<string>? AvatarUpdated;
     public event Action? DirectoryChanged;
+    public event Action<string>? UpdateReady;
+    public event Action? GroupsChanged;
+    /// <summary>Bu cihaza yeni bir sohbet grubu/davet işlendi (önceden üye değildik).</summary>
+    public event Action<ChatGroup, string /*fromPeerId*/>? GroupInviteReceived;
 
-    public ChatService(Identity identity, Settings settings, Database db, DirectoryService directory, bool loopbackOnly = false)
+    public ChatService(Identity identity, Settings settings, Database db, DirectoryService directory, bool loopbackOnly = false,
+        DeploymentConfig? deployment = null)
     {
         Identity = identity;
         Settings = settings;
         Db = db;
         Directory = directory;
-        Network = new NetworkGuard(settings.AllowPublicNetworks, settings.ExtraAddresses, loopbackOnly);
+        Deployment = deployment ?? DeploymentConfig.Empty;
+        Network = new NetworkGuard(settings.AllowPublicNetworks, CombinedNetworks, loopbackOnly);
         _pool = new ConnectionPool(identity, Registry, HandlePacketAsync, Network);
         Files = new FileTransferService(this, _pool);
-        _server = new PeerServer(identity, HandlePacketAsync, Files.ServeAsync, Network);
+        _update = new AppUpdate(this);
+        _server = new PeerServer(identity, HandlePacketAsync, Files.ServeAsync, Network, _update.ServeAsync,
+            onMessagingConnection: OnInboundMessaging);
         _discovery = new DiscoveryService(identity, BuildAnnounce, ExtraTargets, Network,
-            () => Registry.Online.Select(p => p.Address!).Distinct());
+            () => Registry.Online.Select(p => p.Address!).Concat(_adminHostAddresses).Distinct());
         _discovery.Announced += OnAnnounce;
+        Network.Changed += _discovery.RequestSweep;
         Directory.Changed += () =>
         {
-            _discovery.Broadcast();
+            // Admin yeni uzak ağ yayınlamış olabilir: güvenilen ağlar ve keşif hedefleri hemen güncellenir.
+            RefreshAllowedRemotes();
+            _discovery.RequestSweep();
+            _discovery.RequestBroadcast();
             DirectoryChanged?.Invoke();
         };
     }
 
     public PresenceStatus EffectiveStatus => _autoStatus ?? Settings.Status;
     public int TcpPort => _server.Port;
+    public string? DiscoveryWarning => _discovery.StartError;
+    public bool IsThisAdminHost => IsAdminHostThisMachine;
+    internal ConnectionPool Pool => _pool;
+    internal void RaiseUpdateReady(string message) => UpdateReady?.Invoke(message);
     public string? MyAvatarHash => _avatarHash;
 
     public void Start()
     {
         foreach (var c in Db.LoadContacts())
         {
+            bool hasEndpoint = IPAddress.TryParse(c.Address, out var address) && address.AddressFamily == AddressFamily.InterNetwork &&
+                               !IPAddress.IsLoopback(address) && c.Port is > 0 and <= 65535;
             Registry.Upsert(new PeerSnapshot
             {
                 PeerId = c.PeerId, PublicKey = c.PublicKey, Name = c.Name, User = c.User, Machine = c.Machine,
                 Note = c.Note, AvatarHash = c.AvatarHash, Status = PresenceStatus.Offline,
                 LastSeenUtc = DateTimeOffset.FromUnixTimeMilliseconds(c.LastSeen).UtcDateTime,
+                Address = hasEndpoint ? address : null, Port = hasEndpoint ? c.Port : 0,
             });
         }
         ReloadAvatar();
         _server.Start(Settings.PreferredTcpPort);
         _discovery.Start();
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged += OnNetworkAddressChanged;
         _presenceTimer = new Timer(_ => ExpirePeers(), null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
         _flushTimer = new Timer(_ => FlushAllPending(), null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
+        if (!Network.LoopbackOnly)
+        {
+            _probeTimer = new Timer(_ => _ = ProbePeersAsync(force: false), null, TimeSpan.FromSeconds(8), TimeSpan.FromSeconds(5));
+            // 3 dk: duyuru + bilinen adreslere sweep + TCP ping (asimetrik/VLAN kayıplarını toparlar).
+            _presenceRefreshTimer = new Timer(_ => _ = Task.Run(PeriodicPresenceRefreshAsync), null,
+                PresenceRefreshInterval, PresenceRefreshInterval);
+        }
+        if (Deployment.AdminHost != null && !IsAdminHostThisMachine && !Network.LoopbackOnly)
+            _adminHostTimer = new Timer(_ => _ = ResolveAdminHostAsync(), null, TimeSpan.Zero, TimeSpan.FromMinutes(2));
+        if (IsAdminHostThisMachine) _update.LoadPersistedStatuses();
+        _ = Task.Run(() => _update.ReportStartupAsync());
     }
 
     // ------------------------------------------------------------------ Durum / profil
@@ -116,7 +159,7 @@ public sealed class ChatService : IDisposable
             _autoStatus = null;
         }
         Settings.Save();
-        _discovery.Broadcast();
+        _discovery.RequestBroadcast();
     }
 
     /// <summary>Boşta kalma algılandığında otomatik "Dışarıda" durumu.</summary>
@@ -125,7 +168,7 @@ public sealed class ChatService : IDisposable
         var desired = away && Settings.Status == PresenceStatus.Online ? PresenceStatus.Away : (PresenceStatus?)null;
         if (desired == _autoStatus) return;
         _autoStatus = desired;
-        _discovery.Broadcast();
+        _discovery.RequestBroadcast();
     }
 
     public void ReloadAvatar()
@@ -147,26 +190,93 @@ public sealed class ChatService : IDisposable
         {
             Log.Warn("Avatar okunamadı: " + ex.Message);
         }
-        _discovery.Broadcast();
+        _discovery.RequestBroadcast();
     }
 
     public static string AvatarCachePath(string hash) => Path.Combine(AppPaths.AvatarCacheDir, hash + ".png");
 
-    private AnnouncePayload BuildAnnounce() => new()
+    private AnnouncePayload BuildAnnounce()
     {
-        Name = Settings.DisplayName,
-        User = Environment.UserName,
-        Machine = Environment.MachineName,
-        Status = (int)EffectiveStatus,
-        Note = Settings.Note,
-        Port = _server.Port,
-        DirVersion = Directory.Version,
-        OrgFp = Directory.OrgFingerprint,
-        AvatarHash = _avatarHash,
-    };
+        var ips = NetworkTargets.PreferredLanAddresses(CombinedNetworks, max: 4)
+            .Select(a => a.ToString())
+            .ToList();
+        return new AnnouncePayload
+        {
+            Name = Settings.DisplayName,
+            User = Environment.UserName,
+            Machine = Environment.MachineName,
+            Status = (int)EffectiveStatus,
+            Note = Settings.Note,
+            Port = _server.Port,
+            DirVersion = Directory.Version,
+            OrgFp = Directory.OrgFingerprint,
+            AvatarHash = _avatarHash,
+            AppVer = AppUpdate.CurrentText,
+            Ips = ips.Count > 0 ? ips : null,
+        };
+    }
+
+    public DeploymentConfig Deployment { get; }
+
+    /// <summary>
+    /// Kurulumda tanımlanan ve admin'in imzalı dizinde yayınladığı uzak ağlar. Dizin henüz ağ yayınlamadıysa eski sürümlerde
+    /// kullanıcının kendi ayarına yazdığı ağlar geçerli kalır (geçiş dönemi); admin yayınlayınca onlar yok sayılır.
+    /// </summary>
+    private string CombinedNetworks
+    {
+        get
+        {
+            var published = Directory.Current?.Networks;
+            var legacy = published is { Count: > 0 } ? null : Settings.ExtraAddresses;
+            return string.Join(", ", new[] { Deployment.Networks, published == null ? null : string.Join(", ", published), legacy }
+                .Where(s => !string.IsNullOrWhiteSpace(s)));
+        }
+    }
+
+    /// <summary>Ayarlar penceresinde bilgi olarak gösterilen etkin uzak ağlar.</summary>
+    public string EffectiveNetworks => CombinedNetworks;
+
+    public void RefreshAllowedRemotes() => Network.SetAllowedRemotes(CombinedNetworks);
+
+    // Yeni IP / VPN bağlantısı: tanımlı ağlar bir sonraki tam taramayı beklemeden hemen taranır.
+    private void OnNetworkAddressChanged(object? sender, EventArgs e) => _discovery.RequestSweep();
 
     // Tek IP'ler ve CIDR alt ağlar (VPN / farklı VLAN) tekil keşif hedeflerine genişletilir; yayın bunları geçemez.
-    private IEnumerable<IPAddress> ExtraTargets() => NetworkTargets.Expand(Settings.ExtraAddresses);
+    private IEnumerable<IPAddress> ExtraTargets() => NetworkTargets.Expand(CombinedNetworks);
+
+    private const int MaxAdminHostAddresses = 8;
+    private volatile IPAddress[] _adminHostAddresses = [];
+    private Timer? _adminHostTimer;
+    private int _adminHostResolving;
+
+    /// <summary>
+    /// Kurulumda belirtilen admin bilgisayarının adresini çözer; uzak ağlardaki istemciler admini bu sayede bulur.
+    /// Yalnızca duyuru hedefi olarak kullanılır, güven anahtara dayanır.
+    /// </summary>
+    private async Task ResolveAdminHostAsync()
+    {
+        var host = Deployment.AdminHost;
+        if (host == null || Interlocked.Exchange(ref _adminHostResolving, 1) == 1) return;
+        try
+        {
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            var addresses = await Dns.GetHostAddressesAsync(host, AddressFamily.InterNetwork, cts.Token);
+            _adminHostAddresses = addresses.Where(a => !IPAddress.IsLoopback(a)).Distinct().Take(MaxAdminHostAddresses).ToArray();
+        }
+        catch (Exception ex) when (ex is SocketException or OperationCanceledException)
+        {
+            // Admin bilgisayarı kapalı veya ad çözülemiyor; son bilinen adresler korunur.
+        }
+        finally
+        {
+            Interlocked.Exchange(ref _adminHostResolving, 0);
+        }
+    }
+
+    private bool IsAdminHostThisMachine =>
+        Deployment.AdminHost is { } h &&
+        (string.Equals(h, Environment.MachineName, StringComparison.OrdinalIgnoreCase) ||
+         string.Equals(h.Split('.')[0], Environment.MachineName, StringComparison.OrdinalIgnoreCase));
 
     // ------------------------------------------------------------------ Keşif
 
@@ -181,12 +291,20 @@ public sealed class ChatService : IDisposable
             return;
         }
 
+        var advertised = (p.Ips ?? [])
+            .Select(s => IPAddress.TryParse(s, out var ip) ? ip : null)
+            .Where(ip => ip != null)
+            .Cast<IPAddress>()
+            .ToList();
+        var bestAddress = NetworkTargets.PickReachableAddress(a.Source, advertised, CombinedNetworks);
         var snapshot = new PeerSnapshot
         {
             PeerId = p.Id, PublicKey = a.PublicKey, Name = p.Name, User = p.User, Machine = p.Machine,
-            Note = p.Note, Status = (PresenceStatus)p.Status, Address = a.Source, Port = p.Port,
+            Note = p.Note, Status = (PresenceStatus)p.Status, Address = bestAddress, Port = p.Port,
             LastSeenUtc = DateTime.UtcNow, DirectoryVersion = p.DirVersion, OrgFingerprint = p.OrgFp, AvatarHash = p.AvatarHash,
+            AppVersion = AppUpdate.CleanVersionText(p.AppVer),
         };
+        if (snapshot.AppVersion != null) _update.ObserveVersion(p.Id, snapshot.AppVersion);
         if (snapshot.Status == PresenceStatus.Offline) snapshot = snapshot with { Status = PresenceStatus.Online };
 
         var known = Registry.Get(p.Id);
@@ -194,14 +312,18 @@ public sealed class ChatService : IDisposable
         if (known == null && Registry.Count >= MaxKnownPeers && Directory.GetMember(p.Id) == null)
             return;
 
-        // Çok arayüzlü / VPN ortamında aynı eş birden çok kaynak adresinden duyulabilir. Ulaşılabilirliği
-        // kanıtlanmış (halen açık) bir bağlantı varken yalnızca kaynak adres değiştiyse kararlı adresi koru;
-        // böylece geçerli bağlantı boşuna kapatılıp ulaşılamayan bir adrese yeniden bağlanılmaya çalışılmaz.
-        if (known?.Address != null && known.Port == snapshot.Port &&
-            !known.Address.Equals(snapshot.Address) && _pool.HasLiveConnection(p.Id))
+        // Çok arayüzlü ortamda adres zıplamasın: canlı TCP varken veya mevcut adres hâlâ
+        // duyuru kaynağıyla aynı alt ağdaysa bilinen adresi koru.
+        if (known?.Address != null && known.Port == snapshot.Port && !known.Address.Equals(snapshot.Address))
         {
-            snapshot = snapshot with { Address = known.Address };
+            if (_pool.HasLiveConnection(p.Id) ||
+                (known.IsOnline && NetworkTargets.SameSlash24(known.Address, a.Source)))
+            {
+                snapshot = snapshot with { Address = known.Address };
+            }
         }
+        if (snapshot.AppVersion == null && known?.AppVersion != null)
+            snapshot = snapshot with { AppVersion = known.AppVersion };
 
         var prev = Registry.Upsert(snapshot);
         bool cameOnline = prev == null || !prev.IsOnline;
@@ -249,6 +371,7 @@ public sealed class ChatService : IDisposable
             {
                 PeerId = s.PeerId, PublicKey = s.PublicKey, Name = s.Name, User = s.User, Machine = s.Machine,
                 Note = s.Note, AvatarHash = s.AvatarHash, LastSeen = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(),
+                Address = s.Address?.ToString(), Port = s.Port,
             });
         }
         catch (Exception ex)
@@ -268,11 +391,13 @@ public sealed class ChatService : IDisposable
 
     // ------------------------------------------------------------------ Gönderme
 
-    public StoredMessage? SendText(string peerId, string text)
+    public StoredMessage? SendText(string peerId, string text, ReplyRef? reply = null)
     {
         text = TextLimits.Clean(text, TextLimits.MessageMax, allowNewLines: true);
         if (text.Length == 0 || !IsPeerAllowed(peerId)) return null;
-        return Enqueue(peerId, MessageKind.Text, new MessageData { Text = text });
+        var data = new MessageData { Text = text };
+        reply?.ApplyTo(data);
+        return Enqueue(peerId, MessageKind.Text, data);
     }
 
     public StoredMessage? SendNudge(string peerId)
@@ -314,6 +439,9 @@ public sealed class ChatService : IDisposable
             _ => false,
         };
     }
+
+    public Task<UpdatePushReport> ForceUpdateAsync(IReadOnlyList<string>? peerIds = null) => _update.PushAsync(peerIds);
+    public AppUpdate Updates => _update;
 
     public int SendBulletin(string scope, string text)
     {
@@ -359,9 +487,22 @@ public sealed class ChatService : IDisposable
     {
         try
         {
+            var due = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var peerId in Db.PeersWithPendingOutgoing())
             {
-                if (Registry.Get(peerId) is { IsOnline: true }) _ = Task.Run(() => FlushPendingAsync(peerId));
+                if (ChatGroup.IsConversationId(peerId)) continue;
+                if (Registry.Get(peerId) is { IsOnline: true }) due.Add(peerId);
+            }
+            // Grup kuyruğu: teslim bekleyen grup mesajı olan çevrimiçi üyeler de denenir (teslim sonrası eşitleme gönderir).
+            foreach (var peer in Registry.Online)
+            {
+                if (peer.PeerId != Identity.PeerId && !due.Contains(peer.PeerId) && HasUndeliveredGroupMessages(peer.PeerId))
+                    due.Add(peer.PeerId);
+            }
+            foreach (var peerId in due)
+            {
+                if (_deliveryBackoff.ShouldWait(peerId, DateTime.UtcNow)) continue;
+                _ = Task.Run(() => FlushPendingAsync(peerId));
             }
         }
         catch (Exception ex)
@@ -376,6 +517,9 @@ public sealed class ChatService : IDisposable
         if (Registry.Get(peerId) is not { IsOnline: true } || !IsPeerAllowed(peerId)) return;
         var gate = _deliveryLocks.GetOrAdd(peerId, _ => new SemaphoreSlim(1, 1));
         await gate.WaitAsync();
+        bool reachable = true;
+        bool attempted = false;
+        string? failure = null;
         try
         {
             foreach (var m in Db.LoadPendingOutgoing(peerId))
@@ -387,56 +531,127 @@ public sealed class ChatService : IDisposable
                     MessageUpdated?.Invoke(m);
                     continue;
                 }
-                if (!await DeliverAsync(m)) break;
+                attempted = true;
+                failure = await TryDeliverAsync(m);
+                if (failure != null)
+                {
+                    reachable = false;
+                    break;
+                }
             }
         }
         catch (Exception ex)
         {
+            reachable = false;
             Log.Error("Teslim döngüsü hatası", ex);
         }
         finally
         {
             gate.Release();
         }
+        // Kuyruk boşsa teslim denenmedi: grup kuyruğunun seyreltmesini "başarı" sayıp sıfırlamamak için kayıt tutulmaz.
+        if (attempted || !reachable) RecordDeliveryOutcome(peerId, reachable, failure);
+
+        // Grup eşitlemesi uzun sürebilir; 1:1 kuyruğunu bekletmemek için kilit dışında çalışır.
+        // Eşe ulaşılamadıysa denenmez: hem boşa yeniden deneme yapar hem de 20 sn'lik eşitleme hakkını tüketirdi.
+        if (reachable) await SyncGroupsToPeerAsync(peerId);
     }
 
-    private async Task<bool> DeliverAsync(StoredMessage m)
+    /// <summary>Ulaşılamayan eş için günlüğe yalnızca ilk hata ve kurtulma yazılır; ara denemeler seyreltilir.</summary>
+    private void RecordDeliveryOutcome(string peerId, bool reachable, string? failure)
+    {
+        var shortId = peerId[..Math.Min(8, peerId.Length)];
+        if (reachable)
+        {
+            if (_deliveryBackoff.RecordSuccess(peerId)) Log.Info($"Kişiye yeniden ulaşıldı ({shortId}); bekleyen mesajlar iletiliyor.");
+            return;
+        }
+        if (failure == null) return; // teslim döngüsü hatası yukarıda ayrıca yazıldı
+        if (_deliveryBackoff.RecordFailure(peerId, DateTime.UtcNow) == 1)
+            Log.Warn($"Mesaj teslim edilemedi ({shortId}): {failure}. Kişi çevrimiçi görünüyor ama TCP ile ulaşılamıyor; " +
+                     $"yeniden denemeler {DeliveryBackoff.MaxDelay.TotalMinutes:F0} dakikaya kadar seyreltildi.");
+    }
+
+    /// <summary>Karşı tarafın açtığı TCP'yi havuza alır (asimetrik erişim).</summary>
+    private void OnInboundMessaging(PeerConnection conn)
+    {
+        if (!_pool.TryAdopt(conn)) return;
+        var remote = conn.RemoteAddress;
+        if (remote.IsIPv4MappedToIPv6) remote = remote.MapToIPv4();
+        // Gelen TCP kaynağı, çok arayüzlü makinenin yanlış duyurduğu IP'den daha güvenilir olabilir.
+        if (remote.AddressFamily == AddressFamily.InterNetwork && !IPAddress.IsLoopback(remote))
+        {
+            Registry.Update(conn.RemotePeerId, old =>
+            {
+                if (old.Address != null && old.Address.Equals(remote) && old.IsOnline)
+                    return old with { LastSeenUtc = DateTime.UtcNow };
+                return old with
+                {
+                    Address = remote,
+                    Status = old.Status == PresenceStatus.Offline ? PresenceStatus.Online : old.Status,
+                    LastSeenUtc = DateTime.UtcNow,
+                };
+            });
+        }
+        // Eş bize bağlanabildiyse bekleyen mesajlar bu kanaldan hemen denenir (seyreltme beklenmez).
+        if (IsPeerAllowed(conn.RemotePeerId))
+            _ = Task.Run(() => FlushPendingAsync(conn.RemotePeerId));
+    }
+
+    /// <returns>Teslim edildiyse (veya karşı taraf kalıcı olarak reddettiyse) null; aksi halde hata açıklaması.</returns>
+    private async Task<string?> TryDeliverAsync(StoredMessage m)
     {
         try
         {
-            var conn = await _pool.GetAsync(m.PeerId);
+            PeerConnection conn;
+            try
+            {
+                conn = await _pool.GetAsync(m.PeerId);
+            }
+            catch (PeerUnavailableException)
+            {
+                // Online görünüyor ama giden TCP yok: kısa süre gelen bağlantıyı bekle (NAT/FW).
+                for (var i = 0; i < 6 && !_pool.HasLiveConnection(m.PeerId); i++)
+                    await Task.Delay(500);
+                if (!_pool.HasLiveConnection(m.PeerId)) return "bağlantı kurulamadı";
+                conn = await _pool.GetAsync(m.PeerId);
+            }
+
             var reply = await conn.RequestAsync(ToPacket(m), RequestTimeout);
             if (reply.T == PacketTypes.Ack)
             {
                 m.State = MessageState.Delivered;
                 Db.UpdateMessage(m);
                 MessageUpdated?.Invoke(m);
-                return true;
+                return null;
             }
             if (reply.T == PacketTypes.Error && reply.Err == "forbidden")
             {
                 m.State = MessageState.Failed;
                 Db.UpdateMessage(m);
                 MessageUpdated?.Invoke(m);
-                return true;
+                return null;
             }
-            return false;
+            return "yanıt: " + (reply.Err ?? reply.T);
         }
         catch (PeerUnavailableException)
         {
-            return false;
+            return "kişiye ulaşılamıyor";
         }
         catch (Exception ex)
         {
-            Log.Warn($"Mesaj teslim edilemedi ({m.PeerId[..8]}): {ex.GetType().Name}");
             _pool.Drop(m.PeerId);
-            return false;
+            return ex is OperationCanceledException ? "bağlantı zaman aşımı" : ex.GetType().Name;
         }
     }
 
     private static Packet ToPacket(StoredMessage m) => m.Kind switch
     {
-        MessageKind.Text => new Packet { T = PacketTypes.Message, Id = m.MsgId, Ts = m.Timestamp, Text = m.Data.Text },
+        MessageKind.Text => new Packet
+        {
+            T = PacketTypes.Message, Id = m.MsgId, Ts = m.Timestamp, Text = m.Data.Text,
+            ReplyId = m.Data.ReplyToMsgId, ReplyBy = m.Data.ReplyToSender, ReplyText = m.Data.ReplyToText,
+        },
         MessageKind.Nudge => new Packet { T = PacketTypes.Nudge, Id = m.MsgId, Ts = m.Timestamp },
         MessageKind.File => new Packet
         {
@@ -458,9 +673,10 @@ public sealed class ChatService : IDisposable
             var conn = await _pool.GetAsync(peerId);
             await conn.RequestAsync(packet, RequestTimeout);
         }
-        catch
+        catch (Exception ex)
         {
-            // En iyi çaba.
+            // En iyi çaba: kontrol mesajı (ör. dosya iptali) kaybolursa karşı taraf zaman aşımıyla toparlar.
+            Log.Info($"Kontrol mesajı iletilemedi ({peerId[..Math.Min(8, peerId.Length)]}, {packet.T}): {ex.GetType().Name}");
         }
     }
 
@@ -486,7 +702,36 @@ public sealed class ChatService : IDisposable
 
     /// <summary>Kişi listede gösterilmeli mi? Sıkı modda dizin dışı kimlikleri yalnızca Admin görür (kayıt için).</summary>
     public bool IsVisible(string peerId) =>
-        IsPeerAllowed(peerId) || Directory.GetMember(Identity.PeerId)?.Role == Role.Admin;
+        ChatGroup.IsConversationId(peerId)
+            ? Db.GetChatGroup(ChatGroup.TryParseGroupId(peerId)!) != null
+            : IsPeerAllowed(peerId) || Directory.GetMember(Identity.PeerId)?.Role == Role.Admin;
+
+    /// <summary>
+    /// Yerel kişi kaydını unutur (liste + geçmiş + bağlantı). Aynı makine yeni kimlikle
+    /// tekrar duyuru yapınca otomatik yeniden eklenir. Org dizinindeki kayda dokunmaz.
+    /// </summary>
+    public bool ForgetPeer(string peerId)
+    {
+        if (string.IsNullOrWhiteSpace(peerId) || peerId == Identity.PeerId) return false;
+        if (ChatGroup.IsConversationId(peerId)) return false;
+        _pool.Drop(peerId);
+        Registry.Remove(peerId);
+        try { Db.DeleteContact(peerId); }
+        catch (Exception ex)
+        {
+            Log.Error("Kişi silinemedi", ex);
+            return false;
+        }
+        PeerChanged?.Invoke(new PeerSnapshot
+        {
+            PeerId = peerId,
+            PublicKey = [],
+            Status = PresenceStatus.Offline,
+            LastSeenUtc = DateTime.UtcNow,
+        }, false);
+        Log.Info($"Kişi listeden kaldırıldı: {peerId[..Math.Min(8, peerId.Length)]}");
+        return true;
+    }
 
     private async Task HandlePacketAsync(PeerConnection conn, Packet p)
     {
@@ -515,8 +760,34 @@ public sealed class ChatService : IDisposable
 
         switch (p.T)
         {
+            case PacketTypes.GroupInvite:
+                await conn.SendAsync(AcceptGroupInvite(peerId, p)
+                    ? new Packet { T = PacketTypes.Ack, Re = p.Id }
+                    : new Packet { T = PacketTypes.Error, Re = p.Id, Err = "forbidden" });
+                break;
+
             case PacketTypes.Message:
+                if (!string.IsNullOrEmpty(p.Grp))
+                {
+                    var groupResult = ReceiveGroupMessage(peerId, p);
+                    await conn.SendAsync(groupResult == null
+                        ? new Packet { T = PacketTypes.Ack, Re = p.Id }
+                        : new Packet { T = PacketTypes.Error, Re = p.Id, Err = groupResult });
+                    break;
+                }
+                goto case PacketTypes.Nudge;
+
             case PacketTypes.Nudge:
+                if (!string.IsNullOrEmpty(p.Grp))
+                {
+                    var groupNudgeResult = ReceiveGroupNudge(peerId, p);
+                    await conn.SendAsync(groupNudgeResult == null
+                        ? new Packet { T = PacketTypes.Ack, Re = p.Id }
+                        : new Packet { T = PacketTypes.Error, Re = p.Id, Err = groupNudgeResult });
+                    break;
+                }
+                goto case PacketTypes.FileOffer;
+
             case PacketTypes.FileOffer:
             case PacketTypes.Bulletin:
                 var result = ReceiveContent(peerId, p);
@@ -525,9 +796,54 @@ public sealed class ChatService : IDisposable
                     : new Packet { T = PacketTypes.Error, Re = p.Id, Err = result });
                 break;
 
+            case PacketTypes.Typing:
+                var typingResult = ReceiveTyping(peerId, p);
+                await conn.SendAsync(typingResult == null
+                    ? new Packet { T = PacketTypes.Ack, Re = p.Id }
+                    : new Packet { T = PacketTypes.Error, Re = p.Id, Err = typingResult });
+                break;
+
+            case PacketTypes.Read:
+                var readResult = ReceiveReadReceipt(peerId, p);
+                await conn.SendAsync(readResult == null
+                    ? new Packet { T = PacketTypes.Ack, Re = p.Id }
+                    : new Packet { T = PacketTypes.Error, Re = p.Id, Err = readResult });
+                break;
+
             case PacketTypes.FileCancel:
                 Files.OnRemoteCancel(peerId, p.Id!);
                 await conn.SendAsync(new Packet { T = PacketTypes.Ack, Re = p.Id });
+                break;
+
+            case PacketTypes.Ping:
+                await conn.SendAsync(new Packet { T = PacketTypes.Pong, Re = p.Id, St = (int)EffectiveStatus, Name = AppUpdate.CurrentText });
+                break;
+
+            case PacketTypes.UpdateNow:
+                if (!_update.IsTrustedAdmin(peerId))
+                {
+                    await conn.SendAsync(new Packet { T = PacketTypes.Error, Re = p.Id, Err = "forbidden" });
+                    break;
+                }
+                await conn.SendAsync(new Packet { T = PacketTypes.Ack, Re = p.Id });
+                _ = _update.RunAdminJobAsync(peerId);
+                break;
+
+            case PacketTypes.UpdateStatus:
+                if (!IsAdminHostThisMachine)
+                {
+                    await conn.SendAsync(new Packet { T = PacketTypes.Error, Re = p.Id, Err = "forbidden" });
+                    break;
+                }
+                _update.OnStatusPacket(peerId, p);
+                await conn.SendAsync(new Packet { T = PacketTypes.Ack, Re = p.Id });
+                break;
+
+            case PacketTypes.UpdateInfo:
+                var published = IsAdminHostThisMachine && AppUpdate.ReadPublished(out var offer) ? offer : null;
+                await conn.SendAsync(published == null
+                    ? new Packet { T = PacketTypes.Error, Re = p.Id, Err = "none" }
+                    : new Packet { T = PacketTypes.UpdateOk, Re = p.Id, Name = published.Version.ToString(), Size = published.Size, Sha = published.Sha256 });
                 break;
 
             case PacketTypes.AvatarGet:
@@ -558,6 +874,7 @@ public sealed class ChatService : IDisposable
                 m.Kind = MessageKind.Text;
                 m.Data.Text = TextLimits.Clean(p.Text, TextLimits.MessageMax, allowNewLines: true);
                 if (m.Data.Text.Length == 0) return null;
+                ReplyRef.TryCreate(p.ReplyId, p.ReplyBy, p.ReplyText)?.ApplyTo(m.Data);
                 break;
 
             case PacketTypes.Nudge:
@@ -592,6 +909,8 @@ public sealed class ChatService : IDisposable
         if (!Db.InsertMessage(m)) return null; // Yinelenen teslim: yalnızca yeniden onayla.
 
         MessageAdded?.Invoke(m);
+        // Karşı taraf yazınca giden kuyruğu aynı kanal üzerinden boşaltmayı dene.
+        _ = Task.Run(() => FlushPendingAsync(peerId));
         if (m.Kind == MessageKind.Nudge)
         {
             if (DateTime.UtcNow - _lastNudge.GetValueOrDefault("in:" + peerId) > TimeSpan.FromSeconds(5))
@@ -720,9 +1039,13 @@ public sealed class ChatService : IDisposable
 
     public void Dispose()
     {
-        try { _discovery.SendBye(); } catch { }
+        _discovery.SendBye();
         _presenceTimer?.Dispose();
         _flushTimer?.Dispose();
+        _probeTimer?.Dispose();
+        _presenceRefreshTimer?.Dispose();
+        _adminHostTimer?.Dispose();
+        System.Net.NetworkInformation.NetworkChange.NetworkAddressChanged -= OnNetworkAddressChanged;
         _discovery.Dispose();
         _server.Dispose();
         _pool.Dispose();

@@ -19,6 +19,24 @@ public static class PacketTypes
     public const string Directory = "dir";
     public const string AvatarGet = "avatar-get";
     public const string Avatar = "avatar";
+    /// <summary>Erişilebilirlik yoklaması. Eski sürümler "unsupported" hatasıyla yanıtlar; o da canlılık kanıtıdır.</summary>
+    public const string Ping = "ping";
+    public const string Pong = "pong";
+    /// <summary>Yalnızca admin bilgisayarındaki imzalı kurulum paketinin sürümünü sorar.</summary>
+    public const string UpdateInfo = "upd-info";
+    public const string UpdateOk = "upd-ok";
+    /// <summary>Kurulum paketini ayrı kanalda ister. Eski sürümler bunu tanımaz.</summary>
+    public const string UpdateGet = "upd-get";
+    /// <summary>Admin bilgisayarının, istemciye güncellemeyi hemen denetlemesini söylemesi. Paket taşımaz.</summary>
+    public const string UpdateNow = "upd-now";
+    /// <summary>İstemcinin admin'e güncelleme durumu bildirmesi (Err: started|progress|done|error|exhausted).</summary>
+    public const string UpdateStatus = "upd-status";
+    /// <summary>Grup sohbetine davet. Data alanında üye listesi JSON olarak gider.</summary>
+    public const string GroupInvite = "grp-inv";
+    /// <summary>Okundu bildirimi: data = okunan mesaj kimlikleri (JSON dizi), grp = grup kimliği (1:1'de boş).</summary>
+    public const string Read = "read";
+    /// <summary>"Yazıyor…" göstergesi: grp = grup kimliği (1:1'de boş). Kuyruğa alınmaz.</summary>
+    public const string Typing = "typing";
     public const string Error = "err";
 }
 
@@ -34,9 +52,16 @@ public sealed class Packet
     [JsonPropertyName("size")] public long Size { get; set; }
     [JsonPropertyName("sha")] public string? Sha { get; set; }
     [JsonPropertyName("scope")] public string? Scope { get; set; }
+    /// <summary>Grup sohbeti kimliği (g: öneki olmadan). Boşsa 1:1 mesajdır.</summary>
+    [JsonPropertyName("grp")] public string? Grp { get; set; }
     [JsonPropertyName("data")] public string? Data { get; set; }
     [JsonPropertyName("sig")] public string? Sig { get; set; }
     [JsonPropertyName("err")] public string? Err { get; set; }
+    [JsonPropertyName("st")] public int St { get; set; }
+    /// <summary>Yanıtlanan mesajın kimliği, yazanı ve kısa alıntısı (eski sürümler yok sayar).</summary>
+    [JsonPropertyName("rid")] public string? ReplyId { get; set; }
+    [JsonPropertyName("rby")] public string? ReplyBy { get; set; }
+    [JsonPropertyName("rtx")] public string? ReplyText { get; set; }
 
     private static readonly JsonSerializerOptions Options = new()
     {

@@ -2,64 +2,163 @@
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:ui="clr-namespace:VTalk.UI"
+        xmlns:emoji="clr-namespace:Emoji.Wpf;assembly=Emoji.Wpf"
         Title="Sohbet" Width="580" Height="560" MinWidth="380" MinHeight="360"
         Icon="pack://application:,,,/Assets/vtalk.ico"
         Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
         AllowDrop="True" Drop="Window_Drop" DragOver="Window_DragOver"
         WindowStartupLocation="CenterScreen">
     <Window.Resources>
+        <!-- Sohbetteki tüm yazılar seçilebilir: etiketler salt okunur TextBox, mesaj gövdeleri RichTextBox.
+             Balonlar arası sürükleyerek seçim ve birleşik kopyalama CrossBubbleSelection'dadır. -->
+        <Style x:Key="SelectableLabel" TargetType="TextBox">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="IsReadOnlyCaretVisible" Value="False"/>
+            <!-- Seçim boyası SelectionHighlight'tadır (WPF yalnızca odaktaki kutuyu boyar). -->
+            <Setter Property="SelectionOpacity" Value="0"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Padding" Value="0"/>
+            <Setter Property="Cursor" Value="IBeam"/>
+            <Setter Property="IsUndoEnabled" Value="False"/>
+            <Setter Property="TextWrapping" Value="NoWrap"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="ui:ChatSelection.Selectable" Value="True"/>
+        </Style>
+
         <DataTemplate x:Key="HeaderTemplate">
             <DockPanel Margin="0,8,0,1" Visibility="{Binding ShowHeader, Converter={StaticResource BoolToVis}}">
-                <TextBlock DockPanel.Dock="Right" Text="{Binding TimeText}" Foreground="{StaticResource MutedTextBrush}" FontSize="11"/>
-                <TextBlock FontWeight="SemiBold">
-                    <TextBlock.Style>
-                        <Style TargetType="TextBlock">
+                <TextBox DockPanel.Dock="Right" Text="{Binding TimeText, Mode=OneWay}" Style="{StaticResource SelectableLabel}"
+                         Foreground="{StaticResource MutedTextBrush}" FontSize="11"/>
+                <TextBox Text="{Binding SenderName, Mode=OneWay}" FontWeight="SemiBold" HorizontalAlignment="Left"
+                         PreviewMouseLeftButtonUp="SenderName_Click">
+                    <TextBox.Style>
+                        <Style TargetType="TextBox" BasedOn="{StaticResource SelectableLabel}">
                             <Setter Property="Foreground" Value="{StaticResource IncomingNameBrush}"/>
                             <Style.Triggers>
                                 <DataTrigger Binding="{Binding IsOutgoing}" Value="True">
                                     <Setter Property="Foreground" Value="{StaticResource OutgoingNameBrush}"/>
                                 </DataTrigger>
+                                <DataTrigger Binding="{Binding IsGroupChat, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
+                                    <Setter Property="ToolTip" Value="Etiketlemek için tıkla, seçmek için sürükle"/>
+                                </DataTrigger>
                             </Style.Triggers>
                         </Style>
-                    </TextBlock.Style>
-                    <Run Text="{Binding SenderName, Mode=OneWay}"/><Run Text=" diyor ki:"/>
-                </TextBlock>
+                    </TextBox.Style>
+                </TextBox>
             </DockPanel>
         </DataTemplate>
+
+        <Style x:Key="EmojiButton" TargetType="Button">
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Padding" Value="1,0"/>
+            <Setter Property="Margin" Value="0,0,1,0"/>
+            <Setter Property="FontSize" Value="16"/>
+            <Setter Property="Cursor" Value="Hand"/>
+            <Setter Property="Focusable" Value="False"/>
+            <Setter Property="MinWidth" Value="26"/>
+            <Setter Property="MinHeight" Value="26"/>
+        </Style>
+        <Style x:Key="SelectableMessage" TargetType="emoji:RichTextBox">
+            <Setter Property="IsReadOnly" Value="True"/>
+            <Setter Property="IsReadOnlyCaretVisible" Value="True"/>
+            <Setter Property="Focusable" Value="True"/>
+            <Setter Property="AcceptsReturn" Value="True"/>
+            <Setter Property="BorderThickness" Value="0"/>
+            <Setter Property="Background" Value="Transparent"/>
+            <Setter Property="Cursor" Value="IBeam"/>
+            <Setter Property="IsUndoEnabled" Value="False"/>
+            <Setter Property="HorizontalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="VerticalScrollBarVisibility" Value="Disabled"/>
+            <Setter Property="Padding" Value="0"/>
+            <!-- Çok satırlı mesajda sürükleyerek seçim serbest olsun -->
+            <Setter Property="IsDocumentEnabled" Value="True"/>
+            <Setter Property="SelectionOpacity" Value="0"/>
+            <Setter Property="ui:ChatSelection.Selectable" Value="True"/>
+        </Style>
 
         <DataTemplate x:Key="TextTemplate">
             <StackPanel>
                 <ContentPresenter Content="{Binding}" ContentTemplate="{StaticResource HeaderTemplate}"/>
-                <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent"
-                         TextWrapping="Wrap" Padding="12,0,0,0" Margin="0" FontSize="13.5"/>
-                <TextBlock Text="{Binding DeliveryText}" Foreground="#B26A00" FontSize="11" Margin="14,0,0,0"
-                           Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolToVis}}"/>
+                <!-- Yanıtlanan mesajın alıntısı; tıklayınca asıl mesaja gider. -->
+                <Border Margin="12,2,24,2" Padding="7,3" Background="#F1F5FA" BorderBrush="{StaticResource AccentBrush}"
+                        BorderThickness="3,0,0,0" CornerRadius="2" HorizontalAlignment="Left" Cursor="Hand"
+                        ToolTip="Yanıtlanan mesaja git" MouseLeftButtonUp="ReplyQuote_Click"
+                        Visibility="{Binding HasReply, Converter={StaticResource BoolToVis}}">
+                    <StackPanel>
+                        <TextBlock Text="{Binding ReplySenderName}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"/>
+                        <TextBlock Text="{Binding ReplyQuote}" FontSize="12" Foreground="{StaticResource MutedTextBrush}"
+                                   TextTrimming="CharacterEllipsis" MaxWidth="420"/>
+                    </StackPanel>
+                </Border>
+                <DockPanel>
+                    <!-- Giden mesaj: herkese teslim edilince soluk, herkes okuyunca mavi tik. -->
+                    <TextBlock DockPanel.Dock="Right" Text="✓" FontSize="11" FontWeight="Bold" Margin="6,0,2,1"
+                               VerticalAlignment="Bottom" ToolTip="{Binding ReceiptToolTip}"
+                               Visibility="{Binding ShowReceipt, Converter={StaticResource BoolToVis}}">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Foreground" Value="#A9B4C0"/>
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding IsReceiptRead}" Value="True">
+                                        <Setter Property="Foreground" Value="#34B7F1"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                    <emoji:RichTextBox ui:MessageText.Text="{Binding Text, Mode=OneWay}" Style="{StaticResource SelectableMessage}"
+                                       ui:MentionHighlight.Enable="True" ContextMenuOpening="Message_ContextMenuOpening"
+                                       Padding="12,0,0,0" FontSize="13.5">
+                        <emoji:RichTextBox.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Yanıtla" Click="Reply_Click"/>
+                                <MenuItem Header="Kopyala" Command="ApplicationCommands.Copy"/>
+                            </ContextMenu>
+                        </emoji:RichTextBox.ContextMenu>
+                    </emoji:RichTextBox>
+                </DockPanel>
+                <TextBox Text="{Binding DeliveryText, Mode=OneWay}" Style="{StaticResource SelectableLabel}" TextWrapping="Wrap"
+                         Foreground="#B26A00" FontSize="11" Margin="14,0,0,0"
+                         Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolToVis}}"/>
             </StackPanel>
         </DataTemplate>
 
         <DataTemplate x:Key="NudgeTemplate">
             <Border Margin="0,8" Padding="8,4" Background="#FFF6E5" BorderBrush="#F2C98A" BorderThickness="1" CornerRadius="4" HorizontalAlignment="Left">
-                <TextBlock FontStyle="Italic" Foreground="#8A5A00">
-                    <Run Text="📳 "/>
-                    <Run Text="{Binding SenderName, Mode=OneWay}"/>
-                    <Run Text=" bir titreşim gönderdi."/>
-                    <Run Text="{Binding ShortTime, Mode=OneWay, StringFormat='({0})'}" Foreground="{StaticResource MutedTextBrush}"/>
-                </TextBlock>
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="📳 " VerticalAlignment="Center"/>
+                    <TextBox Text="{Binding NudgeText, Mode=OneWay}" Style="{StaticResource SelectableLabel}"
+                             FontStyle="Italic" Foreground="#8A5A00"/>
+                </StackPanel>
             </Border>
+        </DataTemplate>
+
+        <DataTemplate x:Key="NewMessagesTemplate">
+            <DockPanel Margin="0,12,0,8" LastChildFill="False">
+                <Border DockPanel.Dock="Left" Height="1" Background="#C9D6E5" VerticalAlignment="Center" Width="40" Margin="0,0,8,0"/>
+                <Border DockPanel.Dock="Right" Height="1" Background="#C9D6E5" VerticalAlignment="Center" Width="40" Margin="8,0,0,0"/>
+                <TextBlock Text="{Binding Text}" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"
+                           HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </DockPanel>
         </DataTemplate>
 
         <DataTemplate x:Key="BulletinTemplate">
             <Border Margin="0,8" Padding="10,6" Background="#FFF9DB" BorderBrush="#E8C766" BorderThickness="1" CornerRadius="4">
                 <StackPanel>
                     <DockPanel>
-                        <TextBlock DockPanel.Dock="Right" Text="{Binding TimeText}" Foreground="{StaticResource MutedTextBrush}" FontSize="11"/>
-                        <TextBlock FontWeight="Bold" Foreground="#8A6500">
-                            <Run Text="{Binding BulletinTitle, Mode=OneWay}"/><Run Text=" — "/><Run Text="{Binding SenderName, Mode=OneWay}"/>
-                        </TextBlock>
+                        <TextBox DockPanel.Dock="Right" Text="{Binding TimeText, Mode=OneWay}" Style="{StaticResource SelectableLabel}"
+                                 Foreground="{StaticResource MutedTextBrush}" FontSize="11"/>
+                        <TextBox Text="{Binding BulletinHeaderText, Mode=OneWay}" Style="{StaticResource SelectableLabel}"
+                                 HorizontalAlignment="Left" FontWeight="Bold" Foreground="#8A6500"/>
                     </DockPanel>
-                    <TextBox Text="{Binding Text, Mode=OneWay}" IsReadOnly="True" BorderThickness="0" Background="Transparent" TextWrapping="Wrap" Margin="0,4,0,0"/>
-                    <TextBlock Text="{Binding DeliveryText}" Foreground="#B26A00" FontSize="11"
-                               Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolToVis}}"/>
+                    <emoji:RichTextBox ui:MessageText.Text="{Binding Text, Mode=OneWay}" Style="{StaticResource SelectableMessage}"
+                                       ui:MentionHighlight.Enable="True" Margin="0,4,0,0"/>
+                    <TextBox Text="{Binding DeliveryText, Mode=OneWay}" Style="{StaticResource SelectableLabel}" TextWrapping="Wrap"
+                             Foreground="#B26A00" FontSize="11"
+                             Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolToVis}}"/>
                 </StackPanel>
             </Border>
         </DataTemplate>
@@ -76,15 +175,16 @@
                         <DockPanel>
                             <TextBlock Text="📎" FontSize="22" Margin="0,0,8,0" VerticalAlignment="Center"/>
                             <StackPanel>
-                                <TextBlock Text="{Binding FileName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
-                                <TextBlock Foreground="{StaticResource MutedTextBrush}" FontSize="11.5">
-                                    <Run Text="{Binding FileSizeText, Mode=OneWay}"/><Run Text=" • "/><Run Text="{Binding FileStateText, Mode=OneWay}"/>
-                                </TextBlock>
+                                <TextBox Text="{Binding FileName, Mode=OneWay}" Style="{StaticResource SelectableLabel}" FontWeight="SemiBold"
+                                         MaxWidth="380" ToolTip="{Binding FileName}"/>
+                                <TextBox Text="{Binding FileInfoText, Mode=OneWay}" Style="{StaticResource SelectableLabel}" TextWrapping="Wrap"
+                                         Foreground="{StaticResource MutedTextBrush}" FontSize="11.5"/>
                             </StackPanel>
                         </DockPanel>
                         <StackPanel Visibility="{Binding IsTransferring, Converter={StaticResource BoolToVis}}" Margin="0,6,0,0">
                             <ProgressBar Height="6" Value="{Binding Progress, Mode=OneWay}" Maximum="100"/>
-                            <TextBlock Text="{Binding ProgressText}" FontSize="11" Foreground="{StaticResource MutedTextBrush}"/>
+                            <TextBox Text="{Binding ProgressText, Mode=OneWay}" Style="{StaticResource SelectableLabel}"
+                                     FontSize="11" Foreground="{StaticResource MutedTextBrush}"/>
                         </StackPanel>
                         <WrapPanel Margin="0,6,0,0">
                             <Button Content="Kabul et" Style="{StaticResource LinkButton}" Click="Accept_Click"
@@ -98,8 +198,9 @@
                             <Button Content="Klasörde göster" Style="{StaticResource LinkButton}" Click="ShowInFolder_Click"
                                     Visibility="{Binding CanOpen, Converter={StaticResource BoolToVis}}"/>
                         </WrapPanel>
-                        <TextBlock Text="{Binding DeliveryText}" Foreground="#B26A00" FontSize="11"
-                                   Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolToVis}}"/>
+                        <TextBox Text="{Binding DeliveryText, Mode=OneWay}" Style="{StaticResource SelectableLabel}" TextWrapping="Wrap"
+                                 Foreground="#B26A00" FontSize="11"
+                                 Visibility="{Binding HasDeliveryText, Converter={StaticResource BoolToVis}}"/>
                     </StackPanel>
                 </Border>
             </StackPanel>
@@ -109,14 +210,20 @@
                                     TextTemplate="{StaticResource TextTemplate}"
                                     FileTemplate="{StaticResource FileTemplate}"
                                     NudgeTemplate="{StaticResource NudgeTemplate}"
-                                    BulletinTemplate="{StaticResource BulletinTemplate}"/>
+                                    BulletinTemplate="{StaticResource BulletinTemplate}"
+                                    NewMessagesTemplate="{StaticResource NewMessagesTemplate}"/>
     </Window.Resources>
 
     <DockPanel>
         <!-- Kişi başlığı -->
         <Border DockPanel.Dock="Top" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,0,0,1" Padding="10,8">
             <DockPanel>
-                <Border Width="52" Height="52" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4" ClipToBounds="True" Margin="0,0,10,0">
+                <Button x:Name="InviteButton" DockPanel.Dock="Right" Style="{StaticResource ToolButton}"
+                        Content="Davet et" Margin="8,0,0,0" VerticalAlignment="Center"
+                        ToolTip="Başka bir kişiyi bu sohbete dahil et" Click="Invite_Click"/>
+                <Border x:Name="PeerAvatarBorder" Width="52" Height="52" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1"
+                        CornerRadius="4" ClipToBounds="True" Margin="0,0,10,0" Cursor="Hand" ToolTip="Büyütmek için tıklayın"
+                        MouseLeftButtonUp="PeerAvatar_Click">
                     <Grid>
                         <Image Source="{StaticResource DefaultAvatar}" Stretch="UniformToFill"/>
                         <Image x:Name="PeerAvatar" Stretch="UniformToFill"/>
@@ -130,6 +237,7 @@
                     </StackPanel>
                     <TextBlock x:Name="PeerNote" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis"/>
                     <TextBlock x:Name="PeerRole" FontSize="11" Foreground="{StaticResource MutedTextBrush}"/>
+                    <WrapPanel x:Name="GuestPanel" Margin="0,4,0,0"/>
                 </StackPanel>
             </DockPanel>
         </Border>
@@ -145,16 +253,54 @@
         <!-- Yazma alanı -->
         <Border DockPanel.Dock="Bottom" Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="0,1,0,0" Padding="8">
             <DockPanel>
-                <StackPanel DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6">
-                    <Button Style="{StaticResource ToolButton}" Click="SendFile_Click" ToolTip="Dosya gönder">📎 Dosya</Button>
-                    <Button Style="{StaticResource ToolButton}" Click="SendImage_Click" ToolTip="Resim gönder (Ctrl+V ile yapıştırabilirsiniz)">🖼 Resim</Button>
-                    <Button x:Name="NudgeButton" Style="{StaticResource ToolButton}" Click="Nudge_Click" ToolTip="Titreşim gönder">📳 Titret</Button>
-                </StackPanel>
+                <StackPanel x:Name="ComposerTools" DockPanel.Dock="Top" Orientation="Horizontal" Margin="0,0,0,6"/>
+                <DockPanel DockPanel.Dock="Top" Margin="0,0,0,4" LastChildFill="True">
+                    <Button x:Name="EmojiMoreButton" DockPanel.Dock="Right" Content="▾" ToolTip="Tüm emojiler"
+                            Width="28" Height="26" Focusable="False" Style="{StaticResource EmojiButton}" Margin="4,0,0,0"
+                            Click="EmojiMore_Click"/>
+                    <WrapPanel x:Name="FrequentEmojiPanel"/>
+                </DockPanel>
+                <Popup x:Name="EmojiPopup" PlacementTarget="{Binding ElementName=EmojiMoreButton}" Placement="Top"
+                       StaysOpen="False" AllowsTransparency="True">
+                    <Border Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" Padding="4" CornerRadius="4">
+                        <UniformGrid x:Name="AllEmojiGrid" Columns="5"/>
+                    </Border>
+                </Popup>
+                <!-- Yanıtlanan mesaj: gönderilene kadar yazma alanının üstünde durur. -->
+                <Border x:Name="ReplyBanner" DockPanel.Dock="Top" Margin="0,0,0,4" Padding="7,3" Background="#F1F5FA"
+                        BorderBrush="{StaticResource AccentBrush}" BorderThickness="3,0,0,0" CornerRadius="2" Visibility="Collapsed">
+                    <DockPanel>
+                        <Button DockPanel.Dock="Right" Content="✕" Width="22" Height="22" Padding="0" VerticalAlignment="Center"
+                                Style="{StaticResource EmojiButton}" FontSize="12" ToolTip="Yanıtı iptal et" Click="CancelReply_Click"/>
+                        <StackPanel>
+                            <TextBlock x:Name="ReplyBannerName" FontSize="11.5" FontWeight="SemiBold" Foreground="{StaticResource AccentBrush}"/>
+                            <TextBlock x:Name="ReplyBannerText" FontSize="12" Foreground="{StaticResource MutedTextBrush}" TextTrimming="CharacterEllipsis"/>
+                        </StackPanel>
+                    </DockPanel>
+                </Border>
                 <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Gönder" Width="80" Margin="8,0,0,0" Click="Send_Click"/>
-                <TextBox x:Name="InputBox" MinHeight="54" MaxHeight="140" TextWrapping="Wrap" AcceptsReturn="True" VerticalScrollBarVisibility="Auto"
-                         PreviewKeyDown="InputBox_PreviewKeyDown" Padding="4" BorderBrush="{StaticResource BorderBrush}" MaxLength="16000"/>
+                <Grid>
+                    <emoji:RichTextBox x:Name="InputBox" MinHeight="54" MaxHeight="140" AcceptsReturn="True"
+                                 VerticalScrollBarVisibility="Auto" Padding="4"
+                                 BorderBrush="{StaticResource BorderBrush}"
+                                 PreviewKeyDown="InputBox_PreviewKeyDown" TextChanged="InputBox_TextChanged"
+                                 FontFamily="Segoe UI" FontSize="13.5"/>
+                    <Popup x:Name="MentionPopup" PlacementTarget="{Binding ElementName=InputBox}" Placement="Top"
+                           StaysOpen="True" AllowsTransparency="True" HorizontalOffset="0" VerticalOffset="-2">
+                        <Border Background="White" BorderBrush="{StaticResource BorderBrush}" BorderThickness="1" CornerRadius="4"
+                                MaxHeight="180" MinWidth="200" MaxWidth="320" Padding="0,2"
+                                IsHitTestVisible="True">
+                            <ListBox x:Name="MentionList" BorderThickness="0" Focusable="False"
+                                     PreviewMouseLeftButtonDown="MentionList_Click"/>
+                        </Border>
+                    </Popup>
+                </Grid>
             </DockPanel>
         </Border>
+
+        <!-- "Yazıyor…" göstergesi: mesajların altında, yazma alanının üstünde -->
+        <TextBlock x:Name="TypingText" DockPanel.Dock="Bottom" Background="White" Padding="14,2,12,3" FontSize="11.5"
+                   FontStyle="Italic" Foreground="{StaticResource MutedTextBrush}" Visibility="Collapsed"/>
 
         <!-- Mesajlar -->
         <ScrollViewer x:Name="Scroller" VerticalScrollBarVisibility="Auto" Background="White" Padding="12,4,12,8">

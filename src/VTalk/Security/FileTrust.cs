@@ -73,6 +73,7 @@ public static class FileTrust
     private static string Describe(IdentityReference id)
     {
         try { return id.Translate(typeof(NTAccount)).Value; }
-        catch { return id.Value; }
+        // Etki alanı erişilemiyorsa veya SID eşlenmiyorsa ham SID yazılır; yalnızca günlük metnidir.
+        catch (SystemException) { return id.Value; }
     }
 }

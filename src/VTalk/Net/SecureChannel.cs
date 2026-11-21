@@ -272,7 +272,7 @@ public sealed class SecureChannel : IAsyncDisposable
     public ValueTask DisposeAsync()
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 1) return ValueTask.CompletedTask;
-        try { _tcp.Dispose(); } catch { }
+        _tcp.Dispose();
         _sendKey.Dispose();
         _recvKey.Dispose();
         return ValueTask.CompletedTask;

@@ -1,0 +1,41 @@
+<Window x:Class="VTalk.UI.SearchWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Mesajlarda ara" Width="520" Height="560" MinWidth="380" MinHeight="320"
+        Icon="pack://application:,,,/Assets/vtalk.ico"
+        Background="{StaticResource WindowBrush}" FontFamily="Segoe UI" FontSize="13"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False">
+    <DockPanel Margin="12">
+        <TextBlock x:Name="ScopeText" DockPanel.Dock="Top" FontWeight="SemiBold" Margin="0,0,0,6"/>
+        <DockPanel DockPanel.Dock="Top" Margin="0,0,0,6">
+            <Button DockPanel.Dock="Right" Style="{StaticResource PrimaryButton}" Content="Ara" Width="80" Margin="6,0,0,0"
+                    IsDefault="True" Click="Search_Click"/>
+            <TextBox x:Name="QueryBox" Padding="4" MaxLength="200" ToolTip="Aranacak sözcük (büyük/küçük harf fark etmez)"/>
+        </DockPanel>
+        <TextBlock x:Name="StatusText" DockPanel.Dock="Top" FontSize="11.5" Foreground="{StaticResource MutedTextBrush}" Margin="0,0,0,6"/>
+        <TextBlock DockPanel.Dock="Bottom" FontSize="11" Foreground="{StaticResource MutedTextBrush}" Margin="0,6,0,0" TextWrapping="Wrap"
+                   Text="Bir sonuca çift tıklayın veya Enter'a basın: sohbet açılır ve mesaj işaretlenir."/>
+        <ListBox x:Name="Results" BorderBrush="{StaticResource BorderBrush}" ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                 MouseDoubleClick="Results_MouseDoubleClick" KeyDown="Results_KeyDown">
+            <ListBox.ItemContainerStyle>
+                <Style TargetType="ListBoxItem">
+                    <Setter Property="Padding" Value="6,4"/>
+                    <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+                </Style>
+            </ListBox.ItemContainerStyle>
+            <ListBox.ItemTemplate>
+                <DataTemplate>
+                    <StackPanel>
+                        <DockPanel>
+                            <TextBlock DockPanel.Dock="Right" Text="{Binding When}" FontSize="11" Foreground="{StaticResource MutedTextBrush}"/>
+                            <TextBlock Text="{Binding Title}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis"/>
+                        </DockPanel>
+                        <TextBlock TextWrapping="Wrap" MaxHeight="40" TextTrimming="CharacterEllipsis">
+                            <Run Text="{Binding Before, Mode=OneWay}"/><Run Text="{Binding Match, Mode=OneWay}" Background="#FFF0A6" FontWeight="SemiBold"/><Run Text="{Binding After, Mode=OneWay}"/>
+                        </TextBlock>
+                    </StackPanel>
+                </DataTemplate>
+            </ListBox.ItemTemplate>
+        </ListBox>
+    </DockPanel>
+</Window>

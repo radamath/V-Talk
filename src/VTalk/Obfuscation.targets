@@ -55,7 +55,7 @@
       <_ObfLine Include="&lt;Var name=&quot;RenameEvents&quot; value=&quot;true&quot; /&gt;" />
       <_ObfLine Include="&lt;Var name=&quot;RenameFields&quot; value=&quot;true&quot; /&gt;" />
       <_ObfLine Include="&lt;Var name=&quot;HideStrings&quot; value=&quot;true&quot; /&gt;" />
-      <_ObfLine Include="&lt;Var name=&quot;UseUnicodeNames&quot; value=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="&lt;Var name=&quot;UseUnicodeNames&quot; value=&quot;false&quot; /&gt;" />
       <_ObfLine Include="&lt;Var name=&quot;ReuseNames&quot; value=&quot;true&quot; /&gt;" />
       <_ObfLine Include="&lt;Var name=&quot;OptimizeMethods&quot; value=&quot;true&quot; /&gt;" />
       <_ObfLine Include="&lt;Var name=&quot;SuppressIldasm&quot; value=&quot;true&quot; /&gt;" />
@@ -67,9 +67,12 @@
       <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.App&quot; skipMethods=&quot;true&quot; skipFields=&quot;true&quot; skipProperties=&quot;true&quot; skipEvents=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.UI\.&quot; skipFields=&quot;true&quot; skipProperties=&quot;true&quot; skipEvents=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.Core.Settings&quot; skipProperties=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.Core.DeploymentConfig&quot; skipProperties=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipType name=&quot;VTalk.Core.MessageData&quot; skipProperties=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Services\.ChatService[/+]GroupInvitePayload$&quot; skipProperties=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Data\.Database[/+]ContactInfo$&quot; skipProperties=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Services\.NativeMethods&quot; skipMethods=&quot;true&quot; skipFields=&quot;true&quot; /&gt;" />
+      <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Services\.SessionProcess&quot; skipMethods=&quot;true&quot; skipFields=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipType rx=&quot;^VTalk\.Net\.NetworkGuard[/+]I&quot; skipMethods=&quot;true&quot; /&gt;" />
       <_ObfLine Include="  &lt;SkipMethod type=&quot;VTalk.Services.ProcessHardening&quot; rx=&quot;^(SetDllDirectoryW|SetProcessMitigationPolicy)$&quot; /&gt;" />
       <_ObfLine Include="&lt;/Module&gt;" />

@@ -14,21 +14,34 @@ namespace VTalk.UI;
 
 public partial class MainWindow : Window
 {
+    public static readonly DependencyProperty AllowForgetContactsProperty =
+        DependencyProperty.Register(nameof(AllowForgetContacts), typeof(bool), typeof(MainWindow),
+            new PropertyMetadata(false));
+
+    /// <summary>Liste sil (✕) yalnızca dizin Admin rolüne görünür.</summary>
+    public bool AllowForgetContacts
+    {
+        get => (bool)GetValue(AllowForgetContactsProperty);
+        set => SetValue(AllowForgetContactsProperty, value);
+    }
+
     private readonly AppController _app;
     private readonly ListCollectionView _view;
     private bool _updatingStatus;
     private bool _hintShown;
+    private bool _discarded;
+    private string? _shownAvatarHash;
 
     public MainWindow(AppController app)
     {
         InitializeComponent();
         _app = app;
 
-        var area = SystemParameters.WorkArea;
-        Left = area.Right - Width - 20;
-        Top = Math.Max(area.Top + 20, area.Bottom - Height - 20);
+        // DPI hazır olduktan sonra tam sağa yasla (ctor'da erken ayar kayar).
+        SourceInitialized += (_, _) => DockToRightWorkArea();
+        Loaded += (_, _) => DockToRightWorkArea();
 
-        _view = (ListCollectionView)CollectionViewSource.GetDefaultView(app.Contacts);
+        _view = new ListCollectionView(app.Contacts);
         _view.GroupDescriptions.Add(_grouping);
         UpdateGroupNames();
         _view.SortDescriptions.Add(new SortDescription(nameof(ContactViewModel.GroupOrder), ListSortDirection.Ascending));
@@ -54,6 +67,29 @@ public partial class MainWindow : Window
         RefreshProfile();
         RefreshNetworkWarning();
         UpdateCounts();
+    }
+
+    /// <summary>Monitör çalışma alanının sağ kenarına yapıştır; üstten görev çubuğuna kadar doldur.</summary>
+    private void DockToRightWorkArea()
+    {
+        WindowState = WindowState.Normal;
+        Width = 360;
+        ApplyDock(NativeMethods.WorkAreaDip(this));
+        Dispatcher.BeginInvoke(() =>
+        {
+            Width = 360;
+            ApplyDock(NativeMethods.WorkAreaDip(this));
+        }, System.Windows.Threading.DispatcherPriority.Loaded);
+    }
+
+    private void ApplyDock(Rect area)
+    {
+        var chrome = NativeMethods.InvisibleFrameDip(this);
+        var w = ActualWidth > 1 ? ActualWidth : Width;
+        // Görünür sağ kenar = çalışma alanı sağı (DWM görünmez border telafisi).
+        Left = area.Right - w + chrome.Right;
+        Top = area.Top - chrome.Top;
+        Height = Math.Max(MinHeight, area.Height + chrome.Top + chrome.Bottom);
     }
 
     public void RefreshGrouping()
@@ -92,8 +128,14 @@ public partial class MainWindow : Window
     private void UpdateGroupNames()
     {
         _grouping.GroupNames.Clear();
+        if (SearchBox.Text.Trim().Length > 0) return;
+        var chatGroups = _app.Chat.ListChatGroups();
+        if (chatGroups.Any(g => g.Temporary))
+            _grouping.GroupNames.Add(ContactViewModel.TemporaryGroupsSection);
+        if (chatGroups.Any(g => !g.Temporary))
+            _grouping.GroupNames.Add(ContactViewModel.GroupsSection);
         var dir = _app.Chat.Directory.Current;
-        if (dir == null || SearchBox.Text.Trim().Length > 0) return;
+        if (dir == null) return;
         var myUnit = _app.Chat.Directory.GetUnitName(_app.Chat.Directory.GetMember(_app.Chat.Identity.PeerId)?.UnitId);
         foreach (var name in dir.Units.Select(u => u.Name).Distinct()
                      .OrderBy(n => n == myUnit ? 0 : 1).ThenBy(n => n, StringComparer.CurrentCultureIgnoreCase))
@@ -130,8 +172,13 @@ public partial class MainWindow : Window
         _updatingStatus = false;
         MyStatusDot.Fill = (System.Windows.Media.Brush)new StatusToBrushConverter().Convert(chat.EffectiveStatus, typeof(object), null!, null!);
 
-        MyAvatar.Source = ImageLoader.Load(AppPaths.AvatarFile, 112);
+        if (chat.MyAvatarHash != _shownAvatarHash || (MyAvatar.Source == null && chat.MyAvatarHash != null))
+        {
+            _shownAvatarHash = chat.MyAvatarHash;
+            MyAvatar.Source = chat.MyAvatarHash == null ? null : ImageLoader.Load(AppPaths.AvatarFile, 112);
+        }
         BulletinMenu.IsEnabled = chat.CanSendBulletin(ChatService.ScopeAll) || chat.CanSendBulletin(ChatService.ScopeUnit);
+        ForceUpdateMenu.Visibility = _app.CanManageDirectory && chat.IsThisAdminHost ? Visibility.Visible : Visibility.Collapsed;
         ConflictBar.Visibility = chat.Directory.ConflictDetected ? Visibility.Visible : Visibility.Collapsed;
         OrgText.Text = chat.Directory.Current == null ? "" : $"Dizin v{chat.Directory.Version}" + (chat.Directory.MembersOnly ? " • sıkı mod" : "");
 
@@ -141,6 +188,7 @@ public partial class MainWindow : Window
             ShowPendingMenu.Visibility = VerifyAllMenu.Visibility = adminVis;
             ApplyFilter();
         }
+        AllowForgetContacts = chat.Directory.GetMember(chat.Identity.PeerId)?.Role == Role.Admin;
         UpdateCounts();
     }
 
@@ -154,9 +202,21 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ Pencere
 
+    /// <summary>Pencereyi kalıcı olarak kapatır ve uygulama olaylarından ayırır (yeniden oluşturulmadan önce).</summary>
+    public void Discard()
+    {
+        _discarded = true;
+        _app.ProfileChanged -= RefreshProfile;
+        _app.DirectoryChanged -= RefreshProfile;
+        _app.NetworkChanged -= RefreshNetworkWarning;
+        ContactList.ItemsSource = null;
+        _view.DetachFromSourceCollection();
+        try { Close(); } catch (Exception ex) { Log.Warn($"Ana pencere kapatılamadı: {ex.GetType().Name}"); }
+    }
+
     protected override void OnClosing(CancelEventArgs e)
     {
-        if (!_app.IsExiting)
+        if (!_app.IsExiting && !_discarded)
         {
             e.Cancel = true;
             Hide();
@@ -205,6 +265,12 @@ public partial class MainWindow : Window
 
     private void ContextInfo_Click(object sender, RoutedEventArgs e)
     {
+        if (!_app.CanViewIdentity)
+        {
+            MessageBox.Show(this, "Kimlik bilgilerini yalnızca adminler görebilir.", "V-Talk",
+                MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
         if (ContextContact(sender) is not { } c) return;
         var s = _app.Chat.Registry.Get(c.PeerId);
         var fp = s == null ? "?" : CryptoUtil.Fingerprint(s.PublicKey);
@@ -224,6 +290,39 @@ public partial class MainWindow : Window
         foreach (var w in Application.Current.Windows.OfType<ChatWindow>().Where(w => w.PeerId == c.PeerId)) w.ReloadHistory();
     }
 
+    private void ForgetContact_Click(object sender, RoutedEventArgs e)
+    {
+        e.Handled = true;
+        var c = (sender as FrameworkElement)?.Tag as ContactViewModel
+                ?? (sender as FrameworkElement)?.DataContext as ContactViewModel;
+        if (c != null) ConfirmAndForget(c);
+    }
+
+    private void ConfirmAndForget(ContactViewModel c)
+    {
+        if (!AllowForgetContacts || c.IsGroupChat) return;
+
+        if (c.IsOnline)
+        {
+            var warn = $"\"{c.Name}\" şu anda çevrimiçi.\n\n" +
+                       "Listeden silmek bu bilgisayardaki kaydı ve sohbet geçmişini kaldırır. " +
+                       "Kişi yeniden duyuru yaparsa (aynı IP / yeni kimlik) tekrar görünebilir.\n\n" +
+                       "Gerçekten silmek istiyor musunuz?";
+            if (MessageBox.Show(this, warn, "V-Talk — Kullanıcıyı sil",
+                    MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+                return;
+        }
+        else if (MessageBox.Show(this,
+                     $"\"{c.Name}\" listeden ve sohbet geçmişinden silinsin mi?\n(Kimlik: {c.ShortId})",
+                     "V-Talk — Kullanıcıyı sil", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        if (!_app.ForgetContact(c.PeerId))
+            MessageBox.Show(this, "Kullanıcı silinemedi.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+    }
+
     // ------------------------------------------------------------------ Birim ataması (admin)
 
     private const string PeerDragFormat = "VTalk.PeerId";
@@ -240,7 +339,8 @@ public partial class MainWindow : Window
 
         var dir = _app.Chat.Directory.Current;
         var admin = dir != null && _app.CanManageDirectory;
-        if (admin)
+        var identity = _app.CanViewIdentity;
+        if (identity)
         {
             var snap = _app.Chat.Registry.Get(c.PeerId);
             foreach (var line in new[]
@@ -255,11 +355,68 @@ public partial class MainWindow : Window
         }
 
         AddMenuItem(menu, "Sohbet aç", ContextOpen_Click);
-        AddMenuItem(menu, "Dosya gönder…", ContextSendFile_Click);
+        if (!c.IsGroupChat) AddMenuItem(menu, "Dosya gönder…", ContextSendFile_Click);
+        if (!c.IsGroupChat)
+        {
+            menu.Items.Add(new Separator());
+            var invite = new MenuItem { Header = new TextBlock { Text = "Sohbet grubuna davet et…" } };
+            invite.Click += (_, _) => InviteContactToNewGroup(c);
+            menu.Items.Add(invite);
+            var create = new MenuItem { Header = new TextBlock { Text = "Sohbet grubu oluştur…" } };
+            create.Click += (_, _) =>
+                new CreateGroupWindow(_app, c.PeerId) { Owner = this }.ShowDialog();
+            menu.Items.Add(create);
+            // Kalıcı gruplar; geçici davet odaları menüde yok.
+            var groups = _app.Chat.ListChatGroups().Where(g => !g.Temporary).ToList();
+            var addTo = new MenuItem { Header = new TextBlock { Text = "Varolan sohbet grubuna ekle" } };
+            if (groups.Count == 0)
+            {
+                addTo.Items.Add(new MenuItem { Header = new TextBlock { Text = "(Grup yok)" }, IsEnabled = false });
+            }
+            else
+            {
+                foreach (var g in groups.OrderBy(g => g.Name, StringComparer.CurrentCultureIgnoreCase))
+                {
+                    var groupId = g.Id;
+                    var already = g.MemberIds.Contains(c.PeerId, StringComparer.OrdinalIgnoreCase);
+                    var groupItem = new MenuItem
+                    {
+                        Header = new TextBlock { Text = already ? $"{g.Name} (zaten üye)" : g.Name },
+                        IsEnabled = !already,
+                    };
+                    groupItem.Click += (_, _) =>
+                    {
+                        _app.AddMembersToChatGroup(groupId, [c.PeerId]);
+                        MessageBox.Show(this, $"\"{c.Name}\" \"{_app.Chat.GetChatGroup(groupId)?.Name}\" grubuna eklendi.",
+                            "V-Talk", MessageBoxButton.OK, MessageBoxImage.Information);
+                    };
+                    addTo.Items.Add(groupItem);
+                }
+            }
+            menu.Items.Add(addTo);
+        }
+        if (c.IsGroupChat)
+        {
+            var leave = new MenuItem { Header = new TextBlock { Text = "Gruptan ayrıl…" } };
+            leave.Click += (_, _) =>
+            {
+                var gid = ChatGroup.TryParseGroupId(c.PeerId);
+                if (gid == null) return;
+                if (MessageBox.Show(this, $"\"{c.Name}\" grubundan ayrılıp geçmiş silinsin mi?", "V-Talk",
+                        MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+                _app.LeaveChatGroup(gid);
+            };
+            menu.Items.Add(leave);
+        }
         menu.Items.Add(new Separator());
-        AddMenuItem(menu, "Kimlik bilgisi", ContextInfo_Click);
-        AddMenuItem(menu, "Sohbet geçmişini sil…", ContextDeleteHistory_Click);
-        if (admin) AddDirectoryItems(menu, c, dir!);
+        if (identity && !c.IsGroupChat) AddMenuItem(menu, "Kimlik bilgisi", ContextInfo_Click);
+        if (!c.IsGroupChat)
+        {
+            AddMenuItem(menu, "Sohbet geçmişini sil…", ContextDeleteHistory_Click);
+            if (AllowForgetContacts)
+                AddMenuItem(menu, "Kullanıcıyı listeden sil…", (_, _) => ConfirmAndForget(c));
+        }
+        if (admin && !c.IsGroupChat) AddDirectoryItems(menu, c, dir!);
 
         menu.IsOpen = true;
     }
@@ -269,6 +426,26 @@ public partial class MainWindow : Window
         var item = new MenuItem { Header = new TextBlock { Text = text } };
         item.Click += click;
         menu.Items.Add(item);
+    }
+
+    private void CreateGroup_Click(object sender, RoutedEventArgs e) =>
+        new CreateGroupWindow(_app) { Owner = this }.ShowDialog();
+
+    private void InviteContactToNewGroup(ContactViewModel c)
+    {
+        var picker = new InvitePickerWindow(_app, [c.PeerId],
+            $"\"{c.Name}\" ile yeni gruba eklenecek kişileri seçmek için bir kişi daha seçin.")
+        { Owner = this };
+        if (picker.ShowDialog() != true || picker.Selected == null) return;
+        var name = $"{c.Name}, {picker.Selected.Name}";
+        if (name.Length > 64) name = name[..64];
+        var group = _app.CreateChatGroup(name, [c.PeerId, picker.Selected.PeerId]);
+        if (group == null)
+        {
+            MessageBox.Show(this, "Grup oluşturulamadı.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        _app.OpenChat(group.ConversationId);
     }
 
     private void AddDirectoryItems(ContextMenu menu, ContactViewModel c, OrgDirectory dir)
@@ -377,10 +554,12 @@ public partial class MainWindow : Window
         if (FindAncestor<ListBoxItem>(source)?.DataContext is ContactViewModel target)
             return TryGetMemberUnit(target, out unitId);
         if (FindAncestor<GroupItem>(source)?.DataContext is not CollectionViewGroup group) return false;
+        if (group.Name is not string name) return false;
+        if (name == ContactViewModel.GroupsSection || name == ContactViewModel.TemporaryGroupsSection) return false;
         if (group.Items.OfType<ContactViewModel>().FirstOrDefault() is { } first)
             return TryGetMemberUnit(first, out unitId);
 
-        if (_app.Chat.Directory.Current is not { } dir || group.Name is not string name) return false;
+        if (_app.Chat.Directory.Current is not { } dir) return false;
         var matches = dir.Units.Where(u => u.Name == name).ToList();
         if (matches.Count == 1)
         {
@@ -464,6 +643,43 @@ public partial class MainWindow : Window
 
     // ------------------------------------------------------------------ Menüler
 
+    private void RefreshPeers_Click(object sender, RoutedEventArgs e) => RefreshPeers();
+
+    private void SearchMessages_Click(object sender, RoutedEventArgs e) =>
+        new SearchWindow(_app, conversationId: null) { Owner = this }.Show();
+
+    protected override void OnPreviewKeyDown(KeyEventArgs e)
+    {
+        if (e.Key == Key.F && Keyboard.Modifiers == (ModifierKeys.Control | ModifierKeys.Shift))
+        {
+            e.Handled = true;
+            SearchMessages_Click(this, new RoutedEventArgs());
+            return;
+        }
+        if (e.Key == Key.F5 && Keyboard.Modifiers == ModifierKeys.None)
+        {
+            RefreshPeers();
+            e.Handled = true;
+            return;
+        }
+        base.OnPreviewKeyDown(e);
+    }
+
+    private void RefreshPeers()
+    {
+        if (!RefreshPeersMenu.IsEnabled || !_app.Chat.RefreshPeers()) return;
+        RefreshPeersMenu.IsEnabled = false;
+        CountText.Text = "Kullanıcılar yenileniyor…";
+        var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(5) };
+        timer.Tick += (_, _) =>
+        {
+            timer.Stop();
+            RefreshPeersMenu.IsEnabled = true;
+            UpdateCounts();
+        };
+        timer.Start();
+    }
+
     private void Settings_Click(object sender, RoutedEventArgs e)
     {
         new SettingsWindow(_app) { Owner = this }.ShowDialog();
@@ -482,11 +698,60 @@ public partial class MainWindow : Window
     private void Bulletin_Click(object sender, RoutedEventArgs e) =>
         new BulletinComposeWindow(_app) { Owner = this }.ShowDialog();
 
+    private async void ForceUpdate_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_app.Chat.IsThisAdminHost)
+        {
+            MessageBox.Show(this, "İstemciler yalnızca admin bilgisayarından güncellenir.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (_app.EnsureAdminKey(this) == null) return;
+        if (!AppUpdate.ReadPublished(out var offer) || offer == null)
+        {
+            MessageBox.Show(this, "Bu bilgisayarda yayımlanmış kurulum paketi yok. Önce güncel MSI'yi buraya kurun.", "V-Talk",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        var version = offer.Version.Revision > 0
+            ? offer.Version.ToString()
+            : offer.Version.Build > 0 ? $"{offer.Version.Major}.{offer.Version.Minor}.{offer.Version.Build}" : $"{offer.Version.Major}.{offer.Version.Minor}";
+        if (MessageBox.Show(this,
+                $"Çevrimiçi istemcilere {version} sırayla gönderilecek (biri bitmeden diğeri başlamaz). Her istemci 5 dk × 3 deneme yapar; sonuç admin paneline düşer. Otomatik güncelleme yoktur.",
+                "V-Talk", MessageBoxButton.OKCancel, MessageBoxImage.Warning) != MessageBoxResult.OK)
+            return;
+
+        ForceUpdateMenu.IsEnabled = false;
+        try
+        {
+            var report = await _app.Chat.ForceUpdateAsync();
+            var detail = report.Notes.Count == 0 ? "" : "\n\n" + string.Join("\n", report.Notes.Take(12));
+            MessageBox.Show(this,
+                $"{report.Succeeded} güncellendi.\n{report.Failed} başarısız.\n{report.Outdated} eski istemci (elle kurun).\n{report.Unreachable} ulaşılamadı." + detail,
+                "V-Talk", MessageBoxButton.OK, MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            ForceUpdateMenu.IsEnabled = true;
+        }
+    }
+
+    private static string AppVersionText()
+    {
+        var version = AppUpdate.Current;
+        return version.Revision > 0
+            ? version.ToString()
+            : version.Build > 0 ? $"{version.Major}.{version.Minor}.{version.Build}" : $"{version.Major}.{version.Minor}";
+    }
+
     private void About_Click(object sender, RoutedEventArgs e)
     {
         var chat = _app.Chat;
         MessageBox.Show(this,
-            "V-Talk LAN Messenger 1.1\n\nSunucu gerektirmeyen, eşler arası (P2P) şifreli yerel ağ mesajlaşma uygulaması.\n\n" +
+            $"V-Talk LAN Messenger {AppVersionText()}\n\nSunucu gerektirmeyen, eşler arası (P2P) şifreli yerel ağ mesajlaşma uygulaması.\n\n" +
             $"Kimliğiniz: {chat.Identity.PeerId[..8]}\nParmak izi: {chat.Identity.Fingerprint}\n" +
             $"TCP port: {chat.TcpPort}  •  UDP keşif: {Net.DiscoveryService.Port}\n" +
             $"Organizasyon: {chat.Directory.OrgFingerprint ?? "henüz yok"}{(chat.Directory.IsDeployedTrustRoot ? " (BT tarafından dağıtıldı)" : "")}",

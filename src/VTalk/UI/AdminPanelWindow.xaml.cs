@@ -8,6 +8,7 @@ using System.Windows.Threading;
 using Microsoft.Win32;
 using VTalk.Core;
 using VTalk.Security;
+using VTalk.Services;
 
 namespace VTalk.UI;
 
@@ -39,6 +40,10 @@ public sealed class MemberRow : ObservableObject
     private Role _role;
     private string _unitKey = "";
     private string? _warning;
+    private string _clientVersion = "—";
+    private string _lastUpdatedText = "—";
+    private string _updateStatusText = "—";
+    private bool _canPushUpdate;
     public string PeerId { get; init; } = "";
     public string ShortId => PeerId[..8];
     public string User { get; init; } = "";
@@ -46,6 +51,10 @@ public sealed class MemberRow : ObservableObject
     public string Address { get; init; } = "";
     public string Fingerprint { get; init; } = "";
     public string StateText { get; init; } = "";
+    public bool IsSelf { get; init; }
+    public bool IsOnline { get; init; }
+    /// <summary>Kendi satırın silinemez; aksi halde dizinden çıkarılabilir.</summary>
+    public bool CanRemoveFromDirectory => !IsSelf;
     public string? Warning { get => _warning; set { if (Set(ref _warning, value)) { Raise(nameof(HasWarning)); Raise(nameof(WarningIcon)); Raise(nameof(Tooltip)); } } }
     public bool HasWarning => _warning != null;
     public string WarningIcon => HasWarning ? "⚠" : "";
@@ -56,6 +65,18 @@ public sealed class MemberRow : ObservableObject
     public string RoleBadge => Role switch { Role.UnitManager => "★ Yönetici", Role.Admin => "Admin", _ => "" };
     /// <summary>Boş dize = birim yok.</summary>
     public string UnitKey { get => _unitKey; set => Set(ref _unitKey, value ?? ""); }
+    public string ClientVersion { get => _clientVersion; set => Set(ref _clientVersion, value); }
+    public string LastUpdatedText { get => _lastUpdatedText; set => Set(ref _lastUpdatedText, value); }
+    public string UpdateStatusText { get => _updateStatusText; set => Set(ref _updateStatusText, value); }
+    public bool CanPushUpdate { get => _canPushUpdate; set => Set(ref _canPushUpdate, value); }
+
+    public void ApplyUpdateInfo(ClientUpdateInfo info, bool adminHost, bool isSelf, bool online)
+    {
+        ClientVersion = isSelf ? AppUpdate.CurrentText : info.VersionText;
+        LastUpdatedText = info.LastUpdatedText;
+        UpdateStatusText = isSelf ? "Bu bilgisayar" : info.StatusText;
+        CanPushUpdate = adminHost && !isSelf && online && info.Phase is not (UpdatePhase.Updating or UpdatePhase.Queued);
+    }
 }
 
 public partial class AdminPanelWindow : Window
@@ -87,6 +108,7 @@ public partial class AdminPanelWindow : Window
         MembersGrid.ItemsSource = _members;
 
         LoadData();
+        _app.Chat.Updates.ClientStatusChanged += OnUpdateStatusChanged;
 
         _sessionTimer = new DispatcherTimer { Interval = SessionTimeout };
         _sessionTimer.Tick += (_, _) =>
@@ -107,6 +129,33 @@ public partial class AdminPanelWindow : Window
         _sessionTimer.Start();
     }
 
+    private void OnUpdateStatusChanged() =>
+        Dispatcher.BeginInvoke(() => RefreshUpdateColumns());
+
+    private void Refresh_Click(object sender, RoutedEventArgs e)
+    {
+        ResetSession();
+        if (_dirty && MessageBox.Show(this,
+                "Kaydedilmemiş değişiklikler var. Yenilemek bunları siler. Devam edilsin mi?",
+                "V-Talk", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes)
+            return;
+        LoadData();
+        StatusText.Text = "Liste yenilendi.";
+    }
+
+    private void RefreshUpdateColumns()
+    {
+        var chat = _app.Chat;
+        var adminHost = chat.IsThisAdminHost;
+        foreach (var row in _members)
+        {
+            var info = chat.Updates.GetClientInfo(row.PeerId);
+            if (!row.IsSelf && chat.Registry.Get(row.PeerId)?.AppVersion is { Length: > 0 } ver)
+                chat.Updates.ObserveVersion(row.PeerId, ver);
+            row.ApplyUpdateInfo(info, adminHost, row.IsSelf, row.IsOnline);
+        }
+    }
+
     private void LoadData()
     {
         var chat = _app.Chat;
@@ -120,12 +169,17 @@ public partial class AdminPanelWindow : Window
         var known = chat.Registry.All.ToDictionary(p => p.PeerId);
         var ids = new HashSet<string>(known.Keys) { chat.Identity.PeerId };
         foreach (var m in dir?.Members ?? []) ids.Add(m.PeerId);
+        var adminHost = chat.IsThisAdminHost;
 
         foreach (var id in ids)
         {
             var member = dir?.Members.FirstOrDefault(m => m.PeerId == id);
             known.TryGetValue(id, out var snap);
             var isMe = id == chat.Identity.PeerId;
+            var online = isMe || snap is { IsOnline: true };
+            if (!isMe && snap?.AppVersion is { Length: > 0 } ver)
+                chat.Updates.ObserveVersion(id, ver);
+            var info = chat.Updates.GetClientInfo(id);
             var row = new MemberRow
             {
                 PeerId = id,
@@ -133,12 +187,15 @@ public partial class AdminPanelWindow : Window
                 Machine = isMe ? Environment.MachineName : snap?.Machine ?? "",
                 Address = isMe ? "" : snap?.Address?.ToString() ?? "",
                 Fingerprint = isMe ? chat.Identity.Fingerprint : snap != null ? CryptoUtil.Fingerprint(snap.PublicKey) : "(bilinmiyor)",
-                StateText = isMe ? "Bu bilgisayar" : snap is { IsOnline: true } ? "Çevrimiçi" : "Çevrimdışı",
+                StateText = isMe ? "Bu bilgisayar" : online ? "Çevrimiçi" : "Çevrimdışı",
+                IsSelf = isMe,
+                IsOnline = online,
                 Include = member != null,
                 Name = member?.Name is { Length: > 0 } n ? n : isMe ? chat.Settings.DisplayName : snap?.Name ?? id[..8],
                 Role = member?.Role ?? Role.User,
                 UnitKey = member?.UnitId ?? "",
             };
+            row.ApplyUpdateInfo(info, adminHost, isMe, online);
             row.PropertyChanged += (_, _) => { _dirty = true; UpdateUnitCounts(); };
             _members.Add(row);
         }
@@ -150,6 +207,8 @@ public partial class AdminPanelWindow : Window
         FlagDuplicateClaims();
 
         MembersOnlyCheck.IsChecked = dir?.MembersOnly == true;
+        // Henüz yayınlanmadıysa geçiş için bu bilgisayarın eski yerel ağ ayarı önerilir (Kaydet ve Yayınla ile dağıtılır).
+        NetworksBox.Text = dir?.Networks is { Count: > 0 } nets ? string.Join(", ", nets) : _app.Chat.Settings.ExtraAddresses;
         FingerprintRun.Text = CryptoUtil.Fingerprint(_orgKey.ExportSubjectPublicKeyInfo());
         VersionText.Text = $"Yayındaki dizin sürümü: {chat.Directory.Version}  •  {dir?.Members.Count ?? 0} üye, {dir?.Units.Count ?? 0} birim";
         StatusText.Text = "";
@@ -347,6 +406,20 @@ public partial class AdminPanelWindow : Window
                 "Birim seçilmemiş", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes)
             return;
 
+        var networks = Net.NetworkTargets.SplitEntries(NetworksBox.Text).Distinct().ToList();
+        var invalidNetwork = networks.FirstOrDefault(x => !Net.NetworkTargets.TryParse(x, out _, out _));
+        if (invalidNetwork != null)
+        {
+            MessageBox.Show(this, $"Geçersiz IPv4 adresi veya alt ağ: {invalidNetwork}\nÖrnek: 10.20.30.5 veya 10.20.30.0/24",
+                "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (networks.Count > OrgDirectory.MaxNetworks)
+        {
+            MessageBox.Show(this, $"En fazla {OrgDirectory.MaxNetworks} uzak ağ tanımlanabilir.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
         var membersOnly = MembersOnlyCheck.IsChecked == true;
         var excludedOnline = _members.Count(m => !m.Include && m.StateText == "Çevrimiçi");
         if (membersOnly && excludedOnline > 0 &&
@@ -356,7 +429,10 @@ public partial class AdminPanelWindow : Window
 
         try
         {
-            var dir = new OrgDirectory { Version = _app.Chat.Directory.Version, Units = units, Members = members, MembersOnly = membersOnly };
+            var dir = new OrgDirectory
+            {
+                Version = _app.Chat.Directory.Version, Units = units, Members = members, MembersOnly = membersOnly, Networks = networks,
+            };
             _app.Chat.Directory.SignAndApply(dir, _orgKey);
             Log.Info($"Admin dizini yayınladı: sürüm {_app.Chat.Directory.Version}");
             LoadData();
@@ -423,6 +499,84 @@ public partial class AdminPanelWindow : Window
         }
     }
 
+    private void DeleteMember_Click(object sender, RoutedEventArgs e)
+    {
+        ResetSession();
+        var row = (sender as FrameworkElement)?.Tag as MemberRow
+                  ?? (sender as FrameworkElement)?.DataContext as MemberRow;
+        if (row == null) return;
+        if (row.IsSelf)
+        {
+            MessageBox.Show(this, "Kendi kaydınızı silemezsiniz.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var warn = row.IsOnline
+            ? $"\"{row.Name}\" şu anda çevrimiçi.\n\nKimlik {row.ShortId} organizasyon dizininden ve bu bilgisayardaki kişi listesinden silinecek.\nYeni kimlikle oturum açarsa tekrar dizine eklenebilir.\n\nSilinsin mi?"
+            : $"\"{row.Name}\" (kimlik {row.ShortId}) dizinden ve yerel listeden silinsin mi?\n\nYeniden kurulum / yeni kimlikle açılınca tekrar katılabilir.";
+        if (MessageBox.Show(this, warn, "V-Talk — Kullanıcıyı sil",
+                MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes)
+            return;
+
+        row.Include = false;
+        _members.Remove(row);
+        _app.ForgetContact(row.PeerId);
+        _dirty = true;
+        UpdateUnitCounts();
+        FlagDuplicateClaims();
+
+        if (MessageBox.Show(this,
+                "Yerel listeden kaldırıldı.\nAğdaki diğer kullanıcıların dizininden de düşmesi için şimdi \"Kaydet ve Yayınla\" yapılsın mı?",
+                "V-Talk", MessageBoxButton.YesNo, MessageBoxImage.Question) == MessageBoxResult.Yes)
+        {
+            Publish_Click(sender, e);
+        }
+        else
+        {
+            StatusText.Text = $"{row.Name} ({row.ShortId}) silindi. Ağdan düşürmek için \"Kaydet ve Yayınla\"ya basın.";
+        }
+    }
+
+    private async void PushOne_Click(object sender, RoutedEventArgs e)
+    {
+        ResetSession();
+        if ((sender as FrameworkElement)?.DataContext is not MemberRow row) return;
+        if (!_app.Chat.IsThisAdminHost)
+        {
+            MessageBox.Show(this, "İstemciler yalnızca admin bilgisayarından güncellenir.", "V-Talk", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+        if (!AppUpdate.ReadPublished(out var offer) || offer == null)
+        {
+            MessageBox.Show(this, "Bu bilgisayarda yayımlanmış kurulum paketi yok. Önce güncel MSI'yi buraya kurun.", "V-Talk",
+                MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+        if (MessageBox.Show(this,
+                $"\"{row.Name}\" için {AppUpdate.FormatVersion(offer.Version)} gönderilsin mi?\n5 dk × 3 deneme; sonuç bu tabloda görünür.",
+                "V-Talk", MessageBoxButton.OKCancel, MessageBoxImage.Question) != MessageBoxResult.OK)
+            return;
+
+        row.CanPushUpdate = false;
+        StatusText.Text = $"{row.Name} güncelleniyor…";
+        try
+        {
+            var report = await _app.Chat.ForceUpdateAsync([row.PeerId]);
+            StatusText.Text = report.Notes.FirstOrDefault() ?? "Tamam";
+            if (report.Failed + report.Unreachable + report.Outdated > 0 && report.Succeeded == 0)
+                MessageBox.Show(this, string.Join("\n", report.Notes), "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        catch (Exception ex)
+        {
+            StatusText.Text = ex.Message;
+            MessageBox.Show(this, ex.Message, "V-Talk", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+        finally
+        {
+            RefreshUpdateColumns();
+        }
+    }
+
     private void Close_Click(object sender, RoutedEventArgs e) => Close();
 
     protected override void OnClosing(System.ComponentModel.CancelEventArgs e)
@@ -439,6 +593,7 @@ public partial class AdminPanelWindow : Window
 
     protected override void OnClosed(EventArgs e)
     {
+        _app.Chat.Updates.ClientStatusChanged -= OnUpdateStatusChanged;
         _sessionTimer.Stop();
         _orgKey.Dispose();
         Log.Info("Admin oturumu kapatıldı.");

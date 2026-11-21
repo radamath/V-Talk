@@ -12,6 +12,8 @@ public sealed class Settings
     public PresenceStatus Status { get; set; } = PresenceStatus.Online;
     public bool SoundEnabled { get; set; } = true;
     public string? CustomSoundPath { get; set; }
+    /// <summary>Yeni mesaj sesi: hazır ses kimliği (NotificationSounds) veya "custom" (CustomSoundPath).</summary>
+    public string MessageSoundId { get; set; } = "classic";
     public bool ShowNotifications { get; set; } = true;
     /// <summary>Bildirimde mesaj içeriğini göster (kapalıysa yalnızca "yeni mesaj" yazar; ekran paylaşımı / kilit ekranı için).</summary>
     public bool ShowMessagePreview { get; set; } = true;
@@ -25,10 +27,11 @@ public sealed class Settings
     public bool StartWithWindows { get; set; } = true;
     public bool StartMinimized { get; set; }
     public int AutoAwayMinutes { get; set; } = 10;
-    public int PreferredTcpPort { get; set; } = 50506;
+    /// <summary>49152 altında tutulur; Windows geçici port rezervasyonu bu sınırın üstünü bloke edebilir.</summary>
+    public const int DefaultTcpPort = 49051;
+    public int PreferredTcpPort { get; set; } = DefaultTcpPort;
     /// <summary>Farklı alt ağlara (VLAN) ulaşmak için ek IP / yayın adresleri, virgülle ayrılmış.</summary>
     public string ExtraAddresses { get; set; } = "";
-
     private static readonly JsonSerializerOptions JsonOptions = new() { WriteIndented = true };
 
     public static Settings Load()
@@ -68,7 +71,7 @@ public sealed class Settings
         if (Status == PresenceStatus.Offline) Status = PresenceStatus.Online;
         AutoAcceptMaxMb = Math.Clamp(AutoAcceptMaxMb, 1, 200);
         AutoAwayMinutes = Math.Clamp(AutoAwayMinutes, 0, 240);
-        if (PreferredTcpPort is < 1024 or > 65535) PreferredTcpPort = 50506;
+        if (PreferredTcpPort is < 1024 or > 65535 or 50506 or 40506) PreferredTcpPort = DefaultTcpPort;
         if (string.IsNullOrWhiteSpace(DownloadFolder))
             DownloadFolder = new Settings().DownloadFolder;
     }

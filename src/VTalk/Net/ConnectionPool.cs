@@ -30,7 +30,38 @@ public sealed class ConnectionPool : IDisposable
     public bool HasLiveConnection(string peerId) =>
         _connections.TryGetValue(peerId, out var c) && !c.IsClosed;
 
-    public async Task<PeerConnection> GetAsync(string peerId, CancellationToken ct = default)
+    /// <summary>
+    /// Gelen (inbound) bağlantıyı havuza alır. Asimetrik NAT/güvenlik duvarında karşı taraf bize
+    /// bağlanabiliyor ama biz ona bağlanamıyorsak giden mesajlar bu kanal üzerinden gider.
+    /// </summary>
+    public bool TryAdopt(PeerConnection connection)
+    {
+        if (connection.IsClosed) return false;
+        var peerId = connection.RemotePeerId;
+        if (string.IsNullOrEmpty(peerId)) return false;
+
+        var gate = _locks.GetOrAdd(peerId, _ => new SemaphoreSlim(1, 1));
+        if (!gate.Wait(3000)) return false;
+        try
+        {
+            if (_connections.TryGetValue(peerId, out var existing) && !existing.IsClosed)
+                return ReferenceEquals(existing, connection);
+
+            connection.Closed += c =>
+                _connections.TryRemove(new KeyValuePair<string, PeerConnection>(c.RemotePeerId, c));
+            _connections[peerId] = connection;
+            return true;
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+    /// <param name="probeEndpoint">
+    /// Çevrimdışı görünen eşin bilinen son uç noktası (erişilebilirlik yoklaması). Kimlik yine el sıkışmada doğrulanır.
+    /// </param>
+    public async Task<PeerConnection> GetAsync(string peerId, CancellationToken ct = default, System.Net.IPEndPoint? probeEndpoint = null)
     {
         if (_connections.TryGetValue(peerId, out var existing) && !existing.IsClosed) return existing;
 
@@ -40,7 +71,9 @@ public sealed class ConnectionPool : IDisposable
         {
             if (_connections.TryGetValue(peerId, out existing) && !existing.IsClosed) return existing;
 
-            var channel = await SecureChannel.ConnectAsync(ResolveEndpoint(peerId), _identity, peerId, ct);
+            var endpoint = probeEndpoint ?? ResolveEndpoint(peerId);
+            if (!_guard.IsAllowedRemote(endpoint.Address)) throw new PeerUnavailableException();
+            var channel = await SecureChannel.ConnectAsync(endpoint, _identity, peerId, ct);
             var connection = new PeerConnection(channel);
             connection.Closed += c => _connections.TryRemove(new KeyValuePair<string, PeerConnection>(c.RemotePeerId, c));
             _connections[peerId] = connection;
